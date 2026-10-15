@@ -1,9 +1,14 @@
-name: Demo — запуск без Docker и без установки ПО
+name: Demo — сборка и деплой на GitHub Pages
 
 on:
   push:
     branches: [main]
   workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
 
 jobs:
   run-app:
@@ -55,5 +60,21 @@ jobs:
           echo ""
           echo "=== Фронтенд отдаёт index.html успешно ===" >> $GITHUB_STEP_SUMMARY
 
-      - name: Итог
+      - name: Итог проверки
         run: echo "✅ Всё работает! Бэкенд и фронтенд запущены." >> $GITHUB_STEP_SUMMARY
+
+      - name: Сохранить собранный фронтенд
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: frontend/dist
+
+  deploy:
+    needs: run-app
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
