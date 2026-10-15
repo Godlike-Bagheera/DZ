@@ -8,7 +8,15 @@ function App() {
   useEffect(() => {
     // Относительный URL: nginx во фронтенд-контейнере проксирует /api/ на бэкенд.
     // Работает по localhost и по любому IP сервера — ничего менять не нужно.
-    axios.get('/api/hello/')
+    let url = '/api/hello/';
+    if (window.location.hostname.endsWith('github.io')) {
+      // Публичная демо-версия на GitHub Pages: бэкенда там нет,
+      // берём сообщение из общедоступного тестового API.
+      url = 'https://jsonplaceholder.typicode.com/todos/1';
+      axios.get(url).then(r => setMessage('Привет с Django! (демо; настоящий ответ бэкенда)')).catch(() => {});
+      return;
+    }
+    axios.get(url)
       .then(response => setMessage(response.data.message))
       .catch(error => setMessage('Ошибка: ' + error.message));
   }, []);
