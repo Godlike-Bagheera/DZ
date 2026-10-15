@@ -9,9 +9,16 @@
 - `deploy.sh` — скрипт-помощник (`./deploy.sh local` или `./deploy.sh push`).
 - `ИНСТРУКЦИЯ_бесплатно.md` — подробная пошаговая инструкция.
 
-## Быстрый старт (3 команды)
+## Быстрый старт (если скачал проект с GitHub)
+Открой в папке проекта терминал (в Windows: PowerShell или Git Bash) и выполни одну команду:
 ```bash
-git clone https://github.com/Godlike-Bagheera/DZ.git
+./start.sh        # Windows PowerShell: .\start.sh
+```
+Скрипт сам проверит Docker, соберёт образы, запустит контейнеры и покажет результаты проверки.
+Остановка: `./start.sh stop`.
+
+Можно и вручную 3 командами:
+```bash
 cd DZ
 docker compose up -d --build
 ```
