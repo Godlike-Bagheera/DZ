@@ -2,7 +2,7 @@
 
 ## Структура
 - `backend/` — Django (проект `mysite`), эндпоинт `GET /api/hello/` → `{"message": "Привет с Django!"}`, CORS включён (`corsheaders`), сервер в контейнере запускается через gunicorn (порт 8000).
-- `frontend/` — React (Vite, вместо CRA — современный аналог из задания), через axios ходит на `http://IP_СЕРВЕРА:8000/api/hello/`. Многоступенчатый Dockerfile: сборка на node:18-alpine, раздача через nginx:alpine (порт 80).
+- `frontend/` — React (Vite, вместо CRA — современный аналог из задания), через axios ходит на `/api/hello/` (nginx проксирует на бэкенд, IP вставлять не нужно). Многоступенчатый Dockerfile: сборка на node:18-alpine, раздача через nginx:alpine (порт 80).
 - `docker-compose.yml` — готов к запуску на VPS (образы с Docker Hub).
 
 ## Локальный запуск без Docker

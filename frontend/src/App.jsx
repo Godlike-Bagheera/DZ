@@ -6,8 +6,9 @@ function App() {
   const [message, setMessage] = useState('Загрузка...');
 
   useEffect(() => {
-    // ВАЖНО: на Шаге 9 замени IP_СЕРВЕРА на реальный IP твоего VPS
-    axios.get('http://IP_СЕРВЕРА:8000/api/hello/')
+    // Относительный URL: nginx во фронтенд-контейнере проксирует /api/ на бэкенд.
+    // Работает по localhost и по любому IP сервера — ничего менять не нужно.
+    axios.get('/api/hello/')
       .then(response => setMessage(response.data.message))
       .catch(error => setMessage('Ошибка: ' + error.message));
   }, []);
