@@ -1,56 +1,36 @@
-# Fullstack: Django + React + Docker (заданию «Задание до субботы.docx»)
+# Fullstack: Django + React + Docker (задание «Задание до субботы.docx»)
+
+Всё делается **бесплатно** на твоём компьютере: Docker Desktop + GitHub + Docker Hub. VPS не нужен.
 
 ## Структура
-- `backend/` — Django (проект `mysite`), эндпоинт `GET /api/hello/` → `{"message": "Привет с Django!"}`, CORS включён (`corsheaders`), сервер в контейнере запускается через gunicorn (порт 8000).
-- `frontend/` — React (Vite, вместо CRA — современный аналог из задания), через axios ходит на `/api/hello/` (nginx проксирует на бэкенд, IP вставлять не нужно). Многоступенчатый Dockerfile: сборка на node:18-alpine, раздача через nginx:alpine (порт 80).
-- `docker-compose.yml` — готов к запуску на VPS (образы с Docker Hub).
+- `backend/` — Django (проект `mysite`), эндпоинт `GET /api/hello/` → `{"message": "Привет с Django!"}`, CORS включён, запуск через gunicorn (порт 8000).
+- `frontend/` — React (Vite) + axios. Ходит на относительный `/api/hello/` — **вставлять IP никуда не нужно**. Многоступенчатый Dockerfile: сборка на node:18-alpine, раздача через nginx:alpine (порт 80, nginx проксирует `/api/` на бэкенд).
+- `docker-compose.yml` — собирает и запускает оба контейнера одной командой.
+- `deploy.sh` — скрипт-помощник (`./deploy.sh local` или `./deploy.sh push`).
+- `ИНСТРУКЦИЯ_бесплатно.md` — подробная пошаговая инструкция.
+
+## Быстрый старт (3 команды)
+```bash
+git clone https://github.com/Godlike-Bagheera/DZ.git
+cd DZ
+docker compose up -d --build
+```
+Открой http://localhost — страница «React фронтенд» с надписью «Привет с Django!».
+API напрямую: http://localhost:8000/api/hello/. Остановить: `docker compose down`.
+
+## Залить образы на Docker Hub (бесплатно)
+```bash
+docker login -u godlike-bagheera   # пароль/access token с hub.docker.com
+docker compose build
+docker compose push
+```
+Образы: `godlike-bagheera/backend-image` и `godlike-bagheera/frontend-image`.
+
+## Публичная ссылка без сервера (если требует преподаватель)
+```bash
+npx localtunnel --port 80   # даст бесплатный адрес вида https://имя.loca.lt
+```
 
 ## Локальный запуск без Docker
-Бэкенд:
-```bash
-cd backend
-pip install -r requirements.txt
-python manage.py runserver 0.0.0.0:8000   # http://localhost:8000/api/hello/
-```
-Фронтенд:
-```bash
-cd frontend
-npm install
-npm run dev        # http://localhost:5173
-```
-
-## Сборка и пуш образов (ШАГ 2)
-```bash
-docker login
-docker build -t Godlike-Bagheera/backend-image ./backend
-docker build -t Godlike-Bagheera/frontend-image ./frontend
-docker push Godlike-Bagheera/backend-image
-docker push Godlike-Bagheera/frontend-image
-```
-
-## Запуск на VPS (ШАГИ 6–7)
-```bash
-ssh root@ТВОЙ_IP
-mkdir -p /root/myapp && cd /root/myapp
-nano docker-compose.yml   # вставить содержимое docker-compose.yml из корня репозитория
-docker compose up -d
-docker compose ps
-```
-
-## ШАГ 9 — подстановка реального IP
-1. В файле `frontend/src/App.jsx` замени `IP_СЕРВЕРА` на реальный IP VPS.
-2. Пересобери и перезалей образ:
-```bash
-docker build -t Godlike-Bagheera/frontend-image ./frontend
-docker push Godlike-Bagheera/frontend-image
-```
-3. На сервере:
-```bash
-cd /root/myapp && docker compose pull && docker compose up -d
-```
-
-## ШАГ 8 — фаервол
-В панели reg.cloud открой входящие правила: TCP 80 (фронт) и TCP 8000 (бэк).
-
-## Проверка (ШАГ 10)
-Открой `http://ТВОЙ_IP` — должна появиться надпись «Привет с Django!».
+Бэкенд: `cd backend && pip install -r requirements.txt && python manage.py runserver 0.0.0.0:8000`
+Фронтенд: `cd frontend && npm install && npm run dev` (http://localhost:5173)
