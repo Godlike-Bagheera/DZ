@@ -1,0 +1,59 @@
+name: Demo — запуск без Docker и без установки ПО
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  run-app:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Клонировать репозиторий
+        uses: actions/checkout@v4
+
+      - name: Установить Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Установить Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Собрать фронтенд (React + Vite)
+        run: |
+          cd frontend
+          npm install
+          npm run build
+          echo "Фронтенд собран: $(ls dist)" >> $GITHUB_STEP_SUMMARY
+
+      - name: Установить зависимости backend (Django)
+        run: |
+          cd backend
+          pip install -r requirements.txt
+
+      - name: Запустить backend и проверить API
+        run: |
+          cd backend
+          python manage.py runserver 0.0.0.0:8000 &
+          sleep 5
+          echo "=== Ответ API http://localhost:8000/api/hello/ ==="
+          curl -s http://localhost:8000/api/hello/
+          echo ""
+          echo "=== Ответ API ===" >> $GITHUB_STEP_SUMMARY
+          curl -s http://localhost:8000/api/hello/ >> $GITHUB_STEP_SUMMARY
+
+      - name: Запустить собранный фронтенд и проверить
+        run: |
+          cd frontend/dist
+          python3 -m http.server 3000 &
+          sleep 3
+          echo "=== Фронтенд отвечает: ==="
+          curl -s http://localhost:3000 | head -5
+          echo ""
+          echo "=== Фронтенд отдаёт index.html успешно ===" >> $GITHUB_STEP_SUMMARY
+
+      - name: Итог
+        run: echo "✅ Всё работает! Бэкенд и фронтенд запущены." >> $GITHUB_STEP_SUMMARY
