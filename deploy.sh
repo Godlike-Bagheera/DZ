@@ -4,7 +4,7 @@
 # Вариант 1 (рекомендуется для задания): запуск всего стека локально в Docker Desktop.
 #   ./deploy.sh local
 #
-# Вариант 2: сборка образов и пуш на бесплатный Docker Hub (Godlike-Bagheera).
+# Вариант 2: сборка образов и пуш на бесплатный Docker Hub (k1ttt3n).
 #   ./deploy.sh push
 #
 # Требуется установленный Docker Desktop: https://www.docker.com/products/docker-desktop/
@@ -25,15 +25,15 @@ case "$MODE" in
     if ! docker info >/dev/null 2>&1; then
       echo "Docker не запущен. Открой Docker Desktop и повтори."; exit 1
     fi
-    read -p "Логин Docker Hub [testbagheera666@gmail.com]: " DH_USER
-    DH_USER=${DH_USER:-testbagheera666@gmail.com}
+    read -p "Логин Docker Hub [твоя_почта@gmail.com]: " DH_USER
+    DH_USER=${DH_USER:-твоя_почта@gmail.com}
     echo "Введи пароль от Docker Hub (символы не отображаются):"
     read -s DH_PASS
     echo "$DH_PASS" | docker login -u "$DH_USER" --password-stdin
-    docker build -t Godlike-Bagheera/backend-image ./backend
-    docker build -t Godlike-Bagheera/frontend-image ./frontend
-    docker push Godlike-Bagheera/backend-image
-    docker push Godlike-Bagheera/frontend-image
+    docker build -t k1ttt3n/backend-image ./backend
+    docker build -t k1ttt3n/frontend-image ./frontend
+    docker push k1ttt3n/backend-image
+    docker push k1ttt3n/frontend-image
     echo "Готово: образы залиты на Docker Hub."
     ;;
   *)

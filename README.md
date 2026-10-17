@@ -27,11 +27,11 @@ API напрямую: http://localhost:8000/api/hello/. Остановить: `d
 
 ## Залить образы на Docker Hub (бесплатно)
 ```bash
-docker login -u godlike-bagheera   # пароль/access token с hub.docker.com
+docker login -u k1ttt3n   # пароль/access token с hub.docker.com
 docker compose build
 docker compose push
 ```
-Образы: `godlike-bagheera/backend-image` и `godlike-bagheera/frontend-image`.
+Образы: `k1ttt3n/backend-image` и `k1ttt3n/frontend-image`.
 
 ## Публичная ссылка без сервера (если требует преподаватель)
 ```bash
