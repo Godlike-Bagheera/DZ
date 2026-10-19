@@ -2,13 +2,13 @@ version: '3.8'
 services:
   backend:
     build: ./backend
-    image: k1ttt3n/backend-image:latest
+    image: Godlike-Bagheera/backend-image:latest
     ports:
       - "8000:8000"
     restart: unless-stopped
   frontend:
     build: ./frontend
-    image: k1ttt3n/frontend-image:latest
+    image: Godlike-Bagheera/frontend-image:latest
     ports:
       - "80:80"
     restart: unless-stopped

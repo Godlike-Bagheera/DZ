@@ -4,7 +4,7 @@
 # Вариант 1 (рекомендуется для задания): запуск всего стека локально в Docker Desktop.
 #   ./deploy.sh local
 #
-# Вариант 2: сборка образов и пуш на бесплатный Docker Hub (k1ttt3n).
+# Вариант 2: сборка образов и пуш на бесплатный Docker Hub (свой логин).
 #   ./deploy.sh push
 #
 # Требуется установленный Docker Desktop: https://www.docker.com/products/docker-desktop/
@@ -30,10 +30,10 @@ case "$MODE" in
     echo "Введи пароль от Docker Hub (символы не отображаются):"
     read -s DH_PASS
     echo "$DH_PASS" | docker login -u "$DH_USER" --password-stdin
-    docker build -t k1ttt3n/backend-image ./backend
-    docker build -t k1ttt3n/frontend-image ./frontend
-    docker push k1ttt3n/backend-image
-    docker push k1ttt3n/frontend-image
+    docker build -t Godlike-Bagheera/backend-image ./backend
+    docker build -t Godlike-Bagheera/frontend-image ./frontend
+    docker push Godlike-Bagheera/backend-image
+    docker push Godlike-Bagheera/frontend-image
     echo "Готово: образы залиты на Docker Hub."
     ;;
   *)

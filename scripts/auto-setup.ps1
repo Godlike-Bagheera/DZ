@@ -33,6 +33,9 @@ $vdi = Join-Path $VMDir "$VmName.vdi"
 
 # --- cloud-init автоустановка (чтобы не тыкать мышкой в установщике) ---
 Step "Готовлю файл автоустановки Ubuntu (cloud-init/subiquity)..."
+# Хеш пароля считаем на самой ВМ во время установки (python3 есть в окружении установщика),
+# поэтому с Windows генерация crypt-хеша не нужна.
+$VmPassEsc = $VmPass -replace "'", "''"
 $userData = @"
 #cloud-config
 autoinstall:
@@ -42,53 +45,7 @@ autoinstall:
   identity:
     hostname: dzserver
     username: stud
-    password: "$(python -c "import crypt;print(crypt.crypt('$VmPass',crypt.METHOD_SHA512))" 2>$null)"
-  ssh:
-    install-server: true
-    allow-pw: true
-  storage:
-    layout:
-      name: direct
-  apt:
-    primary: [{arches: [amd64], uri: http://archive.ubuntu.com/ubuntu/}]
-  packages:
-    - openssh-server
-    - curl
-  late-commands:
-    - echo 'stud ALL=(ALL) NOPASSWD:ALL' > /target/etc/sudoers.d/stud
-"@ -replace '\$\(python.*?\)', ''  # заглушка, пароль ниже через хеш
-# Проще: сгенерировать sha512-crypt хеш на PowerShell
-$salt = -join ((48..57)+(97..122) | Get-Random -Count 8 | ForEach-Object {[char]$_})
-Add-Type -AssemblyName System.Security
-function Crypt-Mkpass([string]$pass, [string]$salt) {
-    # crypt(3) sha512: используем готовый способ через openssl если есть, иначе python из коробки не нужен —
-    # subiquity принимает и plaintext через user-data? Нет. Используем $6$ через DotNet bcrypt нельзя.
-    # Решение: ставим пароль позже по SSH (первый вход через cloud-init с временным паролем 'changeme').
-    return $null
-}
-# Надёжнее: автоустановка без пароля, а пароль ставим сразу после первого входа по SSH (cloud-init создаёт юзера с par-хешем ниже).
-$sha = ""
-try {
-    $py = (Get-Command python -ErrorAction SilentlyContinue)?.Source
-    if ($py) { $sha = & $py -c "import crypt;print(crypt.crypt('$VmPass', '\$6`$$salt'))" }
-} catch {}
-if (-not $sha) {
-    # fallback: openssl passwd -6
-    $ossl = (Get-Command openssl -ErrorAction SilentlyContinue)?.Source
-    if ($ossl) { $sha = & $ossl passwd -6 -salt $salt $VmPass }
-}
-if (-not $sha) { throw "Не могу захешировать пароль (нужен python или openssl). Поставь Python с python.org и повтори." }
-
-$userData = @"
-#cloud-config
-autoinstall:
-  version: 1
-  locale: en_US.UTF-8
-  keyboard: {layout: us}
-  identity:
-    hostname: dzserver
-    username: stud
-    password: "$sha"
+    password: placeholder-set-in-late-commands
   ssh:
     install-server: true
     allow-pw: true
@@ -101,6 +58,8 @@ autoinstall:
     - python3
   late-commands:
     - echo 'stud ALL=(ALL) NOPASSWD:ALL' > /target/etc/sudoers.d/stud
+    - chmod 440 /target/etc/sudoers.d/stud
+    - curtin in-target -- bash -c "printf '%s\n' 'import crypt; print(crypt.crypt(''''$VmPassEsc'''', crypt.METHOD_SHA512))' > /tmp/ph.py && python3 /tmp/ph.py > /tmp/ph && usermod -p \"\$(cat /tmp/ph)\" stud && rm -f /tmp/ph /tmp/ph.py"
 "@
 $cid = Join-Path $VMDir "user-data"
 Set-Content -Path $cid -Value $userData -Encoding ASCII -NoNewline
