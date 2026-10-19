@@ -64,15 +64,30 @@ $rules = @(
     @{n="frontend"; r="tcp,,8080,,80"},
     @{n="backend";  r="tcp,,8000,,8000"}
 )
+# Vazhno: ErrorActionPreference=Stop prevrashchaet lyuboy stderr VBoxManage v fatal.
+$prevEAP = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
 if ($status -eq "running") {
-    # na letu: tolko controlvm, bez delete (esli pravila net - E_INVALIDARG normalno)
+    # na letu: chitaem sushchestvuyushchie pravila, peresozdaem tolko esli port ne tot
+    $existing = @(& $VBM showvminfo $VmName --machinereadable 2>$null | Select-String '^natpf1-')
     foreach ($q in $rules) {
-        & $VBM controlvm $VmName natpf1 "$($q.n),$($q.r)" 2>$null | Out-Null
-        if ($LASTEXITCODE -ne 0) {
-            & $VBM controlvm $VmName natpf1 delete $($q.n) 2>$null | Out-Null
+        $already = $existing | Where-Object { $_.ToString().StartsWith("natpf1-" + $q.n + "=") }
+        if ($already) {
+            Info ("  pravilo '{0}' uzhe est': {1}" -f $q.n, $already.ToString())
+            $needReplace = $false
+            if     ($q.n -eq "ssh")      { if ($already.ToString() -notmatch ("," + $SshPort + ",")) { $needReplace = $true } }
+            elseif ($q.n -eq "frontend") { if ($already.ToString() -notmatch ",8080,") { $needReplace = $true } }
+            elseif ($q.n -eq "backend")  { if ($already.ToString() -notmatch ",8000,") { $needReplace = $true } }
+            if ($needReplace) {
+                & $VBM controlvm $VmName natpf1 delete $q.n 2>$null | Out-Null
+                & $VBM controlvm $VmName natpf1 "$($q.n),$($q.r)" 2>$null | Out-Null
+            }
+        } else {
             & $VBM controlvm $VmName natpf1 "$($q.n),$($q.r)" 2>$null | Out-Null
         }
     }
+    $check = @(& $VBM showvminfo $VmName --machinereadable 2>$null | Select-String '^natpf1-')
+    if ($check.Count -eq 0) { Bad "Ne udalos dobavit NAT-pravila na letu. Vykluchi VM (poweroff/Full Reset) i zapusti skript povtorno."; exit 1; }
 } else {
     # vyklyuchena: modifyvm + proverka, chto imenno natpf1 (a ne hostonly/bridged)
     & $VBM modifyvm $VmName --natpf1 delete ssh 2>$null | Out-Null
@@ -92,6 +107,7 @@ if ($status -eq "running") {
 }
 Ok "Porty nastroeny."
 
+$ErrorActionPreference = $prevEAP
 # ---------- 3. (VM uzhe zapushchenya vyse) ----------
 
 # ---------- 4. zhdyom SSH-banner ----------
