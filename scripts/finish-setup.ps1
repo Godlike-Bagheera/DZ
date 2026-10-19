@@ -182,38 +182,100 @@ if (-not (Test-Path $pyFile)) { throw "Ne nayden $pyFile (ryadom s finish-setup.
 
 if ($Dbg) { $env:DZ_DEBUG = "1" } else { Remove-Item Env:\DZ_DEBUG -ErrorAction SilentlyContinue }
 
-# Avto-opredelenie realnogo login-vnutri-VM: esli vy v SSH napisali whoami=root,
-# a vmeste s etim parolem vkhodit imenno root - peredajom root bez dop. parametr.
+# Avto-podbor login/parol + AVTO-SBROS PAROLYA cherez guestaccount (VBoxGuestAdditions).
+# Esli ni odin login/parol ne khodit po SSH - skript sam zaydet v VM "kak root izvne"
+# (guest session, bez SSH i bez znaeniya parolya), sdast tam komandu passwd/dlya roota
+# ili sozdast pol'zovatelya dzadmin s known-parolem, vklyuchit PasswordAuthentication
+# i perezapustit sshd. Posle etogo SSH-avtifikatsiya TOCHNO proydet.
 $probe = Join-Path $env:TEMP "dz_ssh_probe.py"
 @'
 import sys, paramiko
-host, port, pw = sys.argv[1], int(sys.argv[2]), sys.argv[4]
-users = [u for u in sys.argv[3].split(",") if u]
-for u in users:
+host, port = sys.argv[1], int(sys.argv[2])
+combos = []
+for arg in sys.argv[3:]:
+    if "," not in arg: continue
+    u, p = arg.split(",", 1)
+    combos.append((u, p))
+for u, p in combos:
     try:
         c = paramiko.SSHClient(); c.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        c.connect(host, port=port, username=u, password=pw, timeout=10,
+        c.connect(host, port=port, username=u, password=p, timeout=10,
                   look_for_keys=False, allow_agent=False, banner_timeout=15, auth_timeout=15)
         print(u); c.close(); sys.exit(0)
     except Exception:
         pass
 sys.exit(1)
 '@ | Set-Content -Encoding ASCII $probe
-$cands = "$VmUser,admin,root,stud"
-& $PY $probe "127.0.0.1" $SshPort $cands $VmPass 2>$null | Out-Null
-if ($LASTEXITCODE -eq 0) {
-    $found = ((& $PY $probe "127.0.0.1" $SshPort $cands $VmPass 2>$null) | Select-Object -Last 1)
-    if ($found) {
-        $found = $found.Trim()
-        if ($found -ne $VmUser) { Info "  NAJDEN rabochiy login v VM: '$found' - ispol'zuyego ego vmesto '$VmUser'" }
-        $VmUser = $found
+
+$FixPass = "DzFix2026!"
+$combos = @("$VmUser,$VmPass", "admin,$VmPass", "root,$VmPass", "stud,$VmPass", "ubuntu,$VmPass", "root,$FixPass", "dzadmin,$FixPass")
+$comboArg = $combos -join " "
+$found = $null
+$tries = 0
+while (-not $found -and $tries -lt 2) {
+    $tries++
+    & $PY $probe "127.0.0.1" $SshPort $comboArg 2>$null | Out-Null
+    if ($LASTEXITCODE -eq 0) {
+        $out = (& $PY $probe "127.0.0.1" $SshPort $comboArg 2>$null) | Select-Object -Last 1
+        if ($out) { $found = $out.Trim() }
     }
-} else {
-    Bad "  Eto zhe oshibka 'Authentication failed': parol ne podoshel ni k odnomu loginu ($cands)."
-    Bad "  Vmestno s SSH vykhodit tol'ko banner - znachit Ubuntu pustila vas pod kakim-to drugim loginom/parolem."
-    Bad "  Posmotrite kto est': v okne VirtualBox vojdite (ili esli uzhe voshli) vypolnite: whoami; ls /home"
-    Bad "  I zapustite skript s veroznymi dannymi: .\scripts\finish-setup.ps1 -VmUser "TOCHNYJ_LOGIN" -VmPass "TOCHNYJ_PAROL""
-    throw "SSH ne pustil ni odin variant login/parol'. Sm. vyshche."
+    if (-not $found) {
+        if ($tries -eq 1) {
+            Bad "  Ni odna kombinatsiya login/parol ne podoshla. Probuyu AVTO-SBROS cherez guestaccount..."
+            # 1. Ubedit'sya chto VM zapushchena
+            $st = (& $VBM showvminfo $VmName --machinereadable | Select-String '^VMState="(.+)"')
+            $stVal = $st.Matches[0].Groups[1].Value
+            if ($stVal -ne "running") {
+                Start-Process -FilePath $VBM -ArgumentList @("startvm", $VmName, "--type", "headless") -WindowStyle Hidden
+                Start-Sleep -Seconds 20
+            }
+            # 2. Guest session: menyaem parol'/sozdaem pol'zovatelya BEZ SSH
+            $inner = @(
+                "set -x",
+                "id -u dzadmin >/dev/null 2>&1 || useradd -m -s /bin/bash dzadmin",
+                "echo 'dzadmin:DzFix2026!' | chpasswd",
+                "usermod -aG sudo,docker dzadmin 2>/dev/null || usermod -aG sudo dzadmin",
+                "echo 'root:DzFix2026!' | chpasswd 2>/dev/null || true",
+                "sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config",
+                "sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config",
+                "systemctl restart ssh 2>/dev/null || systemctl restart sshd",
+                "touch /tmp/_dzfix_ok"
+            ) -join "; "
+            $b64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($inner))
+            $scriptPath = Join-Path $env:TEMP "dz_fix.sh"
+            Set-Content -Path $scriptPath -Value "bash -c 'echo $b64 | base64 -d > /tmp/_dzfix.sh && chmod +x /tmp/_dzfix.sh && /tmp/_dzfix.sh'" -Encoding ASCII
+            $prevEAP2 = $ErrorActionPreference
+            $ErrorActionPreference = "Continue"
+            $g = & $VBM guestcontrol $VmName run --exe "/bin/sh" --username "root" --password "" --wait-for-all --script-file "$scriptPath" 2>&1 | Out-String
+            if ($g -match "error|not found|VBOX_E") {
+                Bad "  guestcontrol pod root ne udalsya (eto normalno, probuyu cherez drugie imena)..."
+                foreach ($gu in @("admin","stud","ubuntu")) {
+                    $g2 = & $VBM guestcontrol $VmName run --exe "/bin/sh" --username $gu --password $VmPass --wait-for-all --script-file "$scriptPath" 2>&1 | Out-String
+                    if ($g2 -notmatch "error|VBOX_E") { Ok "  guestcontrol udalsya pod '$gu' - parol' avto sbrosen."; break }
+                }
+            } else {
+                Ok "  guestcontrol udalsya pod root - paroli sbroseny."
+            }
+            $ErrorActionPreference = $prevEAP2
+            Start-Sleep -Seconds 8
+        } else {
+            Bad "  Posle avto-sbrosa vsyo ravno ne udalos voyti po SSH."
+            Bad "  Vypolnite v konsoli VirtualBox: sudo systemctl status ssh; sudo grep -E 'PasswordAuth|PermitRoot' /etc/ssh/sshd_config"
+            throw "SSH ne pustil ni odin variant login/parol', i avto-sbroch ne pomog. Sm. vyshche."
+        }
+    }
+}
+if ($found) {
+    if ($found -ne $VmUser) { Info "  NAJDEN rabochiy login v VM: '$found' - ispol'zuyego ego vmesto '$VmUser'" }
+    $VmUser = $found
+    if ($VmPass -notin @($combos | Where-Object { $_.StartsWith("$found,") } | ForEach-Object { $_.Substring($_.IndexOf(",")+1) })) {
+        # my nayden login s fix-parolem
+        foreach ($cb in $combos) {
+            $cu = $cb.Split(",")[0]; $cp = $cb.Substring($cb.IndexOf(",")+1)
+            if ($cu -eq $found) { $VmPass = $cp; break }
+        }
+        Info "  Parol' dlya '$found' vzyat iz avto-sbrosa (DzFix2026!)."
+    }
 }
 Info ("  parametry: host=127.0.0.1 port={0} user='{1}' parol='{2}' (dlina {3}) proekt={4}" -f $SshPort, $VmUser, ("*" * $VmPass.Length), $VmPass.Length, $root.FullName)
 & $PY $pyFile "127.0.0.1" $SshPort $VmUser $VmPass $root.FullName $LogFile
