@@ -1,0 +1,29 @@
+# -*- mode: ruby -*-
+# vi: set ft=ruby :
+# Один скрипт-команда для всей ВМ: vagrant up
+Vagrant.configure("2") do |config|
+  config.vm.box = "ubuntu/jammy64"
+  config.vm.network "forwarded_port", guest: 80,   host: 8080   # фронтенд
+  config.vm.network "forwarded_port", guest: 8000, host: 8000   # API (Django)
+  config.vm.provider "virtualbox" do |vb|
+    vb.memory = "2048"
+    vb.cpus = 2
+    vb.name = "ubuntu-server-dz"
+  end
+  config.vm.provision "shell", inline: <<-SHELL
+    set -e
+    apt-get update
+    apt-get install -y curl git
+    curl -fsSL https://get.docker.com | sh
+    usermod -aG docker vagrant
+    sudo -u vagrant newgrp docker || true
+  SHELL
+  # Копируем проект на сервер и запускаем docker compose
+  config.vm.provision "shell", inline: <<-SHELL
+    mkdir -p /home/vagrant/myapp
+    cp -r /vagrant/backend /vagrant/frontend /vagrant/docker-compose.yml /home/vagrant/myapp/ 2>/dev/null || true
+    cd /home/vagrant/myapp
+    chmod -R a+rwX .
+    echo "Проект скопирован в /home/vagrant/myapp. Запуск: docker compose up -d --build"
+  SHELL
+end
