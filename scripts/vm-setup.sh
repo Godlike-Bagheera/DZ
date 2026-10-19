@@ -48,10 +48,26 @@ run_ssh() { "$PY" "$SSH_AUTO" run "$VM_HOST" "$VM_SSH_PORT" "$VM_USER" "$VM_PASS
 
 echo "==> 1. Проверка SSH-доступа к виртуалке ($VM_USER@$VM_HOST:$VM_SSH_PORT)..."
 if ! run_ssh "echo SSH_OK_\$(hostname)"; then
-  echo "[!] SSH не проходит. Проверь:"
-  echo "    - виртуалка запущена;"
-  echo "    - проброс порта NAT: имя=ssh TCP порт хоста=2222 порт гостя=22 (IP-поля пустые);"
-  echo "    - VM_USER/VM_PASS указаны верно."
+  echo ""
+  echo "--- Диагностика: проверяю TCP-порт $VM_HOST:$VM_SSH_PORT ---"
+  "$PY" "$PROJECT_DIR/scripts/tcp_check.py" "$VM_HOST" "$VM_SSH_PORT"
+  TCP_RC=$?
+  echo ""
+  case $TCP_RC in
+    2) echo "[!] Порт на хосте НЕ отвечает (таймаут). Значит проблема в VirtualBox:" ;;
+    3) echo "[!] Соединение ОТКЛОНЕНО — проброс работает, но внутри Ubuntu нет SSH-сервера." ;;
+    *) echo "[!] Проброс/SSH недоступны (код $TCP_RC)." ;;
+  esac
+  echo "    Варианты решения:"
+  echo "    A) Если таймаут: Network -> Adapter 1 -> Attached to: NAT (не Host-only/Bridged),"
+  echo "       Port Forwarding: ssh/TCP/хост-порт 2222/гость-порт 22, поля IP пустые."
+  echo "       Перезапусти виртуалку (не suspend, а Full Reset) после изменения правил."
+  echo "    B) Если REFUSED: зайди в окно VirtualBox (логин stud / пароль), выполни там:"
+  echo "       sudo apt install -y openssh-server && sudo systemctl enable --now ssh"
+  echo "       (если sudo спрашивает пароль — это пароль студента от виртуалки)"
+  echo "    C) Проще всего: пересоздай ВМ и на шаге установки Ubuntu отметь 'Install OpenSSH server'."
+  echo ""
+  echo "    После починки повтори: VM_PASS=... bash scripts/vm-setup.sh"
   exit 1
 fi
 
