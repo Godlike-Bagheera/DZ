@@ -36,11 +36,9 @@ def run(cmd, timeout=900, label=None):
 # 1. sudo с паролем (первый раз), затем NOPASSWD
 def sudo_once(inner):
     # передаём пароль через stdin, безопаснее чем echo в командной строке
-    full = f"sudo -S -p '' bash -c '{inner}'" if "'" not in inner else None
-    if full is None:
-        import base64
-        b64 = base64.b64encode(inner.encode()).decode()
-        full = f"echo {b64} | base64 -d > /tmp/_dzcmd.sh && sudo -S -p '' bash /tmp/_dzcmd.sh"
+    import base64
+    b64 = base64.b64encode(inner.encode()).decode()
+    full = f"echo {b64} | base64 -d > /tmp/_dzcmd.sh && sudo -S -p '' bash /tmp/_dzcmd.sh"
     _, out, err = cli.exec_command(full, timeout=900)
     out.channel.sendall((pw + "\n").encode())
     o = out.read().decode(errors="replace")
@@ -58,7 +56,7 @@ sudo_once("apt-get update -y && apt-get install -y curl ca-certificates sudo")
 
 print("==> Разрешаю NOPASSWD sudo для " + user + "...")
 rc, _, _ = sudo_once(
-    f"usermod -aG sudo {user}; echo '{user} ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/{user}; chmod 440 /etc/sudoers.d/{user}"
+    "usermod -aG sudo " + user + "; echo \"" + user + " ALL=(ALL) NOPASSWD:ALL\" > /etc/sudoers.d/" + user + "; chmod 440 /etc/sudoers.d/" + user
 )
 if rc != 0:
     print("[!] Не удалось настроить sudo — проверь правильность пароля (-VmPass).")

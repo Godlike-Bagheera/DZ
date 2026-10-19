@@ -1,8 +1,8 @@
-﻿# finish-setup.ps1 - доводка УЖЕ установленной Ubuntu Server в VirtualBox.
-# Не пересоздаёт ВМ и не трогает её диск. Делает: NAT-порты -> SSH -> Docker -> проект -> docker compose up.
-# Требования: VirtualBox (VBoxManage), Python с paramiko (pip install --user paramiko).
-# Запуск:  .\scripts\finish-setup.ps1 -VmPass "пароль_от_ubuntu"
-# Если Ubuntu ставилась вручную и логин не stud - укажите -VmUser "имя".
+﻿# finish-setup.ps1 - dovodka UZhE ustanovlennoy Ubuntu Server v VirtualBox.
+# Ne peresozdayot VM i ne trogaet eyo disk. Delaet: NAT-porty -> SSH -> Docker -> proekt -> docker compose up.
+# Trebovaniya: VirtualBox (VBoxManage), Python s paramiko (pip install --user paramiko).
+# Zapusk:  .\scripts\finish-setup.ps1 -VmPass "parol_ot_ubuntu"
+# Esli Ubuntu stavilas vruchnuyu i login ne stud - ukazhite -VmUser "imya".
 
 param(
     [Parameter(Mandatory=$true)][string]$VmPass,
@@ -18,7 +18,7 @@ function Ok($m)   { Write-Host "    $m" -ForegroundColor Green }
 function Bad($m)  { Write-Host "    $m" -ForegroundColor Yellow }
 
 # ---------- 0. VirtualBox ----------
-Info "==> Ищу VirtualBox..."
+Info "==> Ischu VirtualBox..."
 $VBM = (Get-Command VBoxManage -ErrorAction SilentlyContinue)
 if ($VBM) { $VBM = $VBM.Source } else {
     $cands = @(
@@ -28,24 +28,24 @@ if ($VBM) { $VBM = $VBM.Source } else {
     )
     $VBM = $cands | Where-Object { Test-Path $_ } | Select-Object -First 1
 }
-if (-not $VBM) { throw "VBoxManage не найден. Добавьте путь к VirtualBox в PATH." }
+if (-not $VBM) { throw "VBoxManage ne nayden. Dobavte put k VirtualBox v PATH." }
 Ok "OK: $VBM"
 
-# ---------- 1. ВМ существует? ----------
-Info "==> Проверяю наличие ВМ '$VmName'..."
+# ---------- 1. VM suschestvuet? ----------
+Info "==> Proveryayu nalichie VM '$VmName'..."
 $vmlist = & $VBM list vms | Out-String
 if ($vmlist -notmatch [regex]::Escape("`"$VmName`"")) {
-    throw "ВМ '$VmName' не найдена. Список ваших ВМ:`n$vmlist`nУкажите правильное имя через -VmName ""ИмяИзСписка""."
+    throw "VM '$VmName' ne naydena. Spisok vashih VM:`n$vmlist`nUkazhite pravilnoe imya cherez -VmName (imya iz spiska above)."
 }
-Ok "ВМ найдена."
+Ok "VM naydena."
 
-# статус
+# status
 $status = (& $VBM showvminfo $VmName --machinereadable | Select-String '^VMState="(.+)"').Matches[0].Groups[1].Value
-Bad "Состояние ВМ: $status"
+Bad "Sostoyanie VM: $status"
 
-# ---------- 2. NAT-порты ----------
-Info "==> Настраиваю проброс портов NAT (ssh $SshPort->22, frontend 8080->80, backend 8000->8000)..."
-# правила можно менять на лету через controlvm (для запущенной ВМ)
+# ---------- 2. NAT-porty ----------
+Info "==> Nastraivayu probros portov NAT (ssh $SshPort->22, frontend 8080->80, backend 8000->8000)..."
+# pravila mozhno menyat na letu cherez controlvm (dlya zapuschennoy VM)
 foreach ($rule in @(
     "ssh,tcp,,${SshPort},,22",
     "frontend,tcp,,8080,,80",
@@ -54,22 +54,22 @@ foreach ($rule in @(
     & $VBM controlvm $VmName natpf1 delete $name 2>$null | Out-Null
     & $VBM controlvm $VmName natpf1 "$rule" 2>$null | Out-Null
     if ($LASTEXITCODE -ne 0) {
-        # если ВМ выключена — через modifyvm
+        # esli VM vyklyuchena  cherez modifyvm
         & $VBM modifyvm $VmName --natpf1 delete $name 2>$null | Out-Null
         & $VBM modifyvm $VmName --natpf1 "$rule" 2>$null | Out-Null
     }
 }
-Ok "Порты настроены."
+Ok "Porty nastroeny."
 
-# ---------- 3. запуск ВМ если выключена ----------
+# ---------- 3. zapusk VM esli vyklyuchena ----------
 if ($status -ne "running") {
-    Info "==> Запускаю ВМ (headless)..."
-    Start-Process -FilePath $VBM -ArgumentList "startvm","`"$VmName`","--type","headless" -WindowStyle Hidden
+    Info "==> Zapuskayu VM (headless)..."
+    Start-Process -FilePath $VBM -ArgumentList @("startvm", $VmName, "--type", "headless") -WindowStyle Hidden
     Start-Sleep -Seconds 15
 }
 
-# ---------- 4. ждём SSH-баннер ----------
-Info "==> Жду SSH-баннер на 127.0.0.1:${SshPort} (до 3 мин)..."
+# ---------- 4. zhdyom SSH-banner ----------
+Info "==> Zhdu SSH-banner na 127.0.0.1:${SshPort} (do 3 min)..."
 $deadline = (Get-Date).AddMinutes(3)
 $banner = $false
 while ((Get-Date) -lt $deadline) {
@@ -84,70 +84,63 @@ while ((Get-Date) -lt $deadline) {
         if ($txt -match "^SSH-") { $banner = $true; break }
     } catch {}
     Start-Sleep -Seconds 5
-    Write-Host "    ...жду..."
+    Write-Host "    ...zhdu..."
 }
 if (-not $banner) {
-    throw @'
-SSH-баннер не получен. Частые причины:
-  1) В Ubuntu НЕ установлен OpenSSH server. Зайдите в окно ВМ (консоль VirtualBox),
-     войдите и выполните:
-       sudo apt update && sudo apt install -y openssh-server
-       sudo systemctl enable --now ssh
-  2) Логин/порт неверны: проверьте -VmUser/-SshPort.
-  3) Сеть адаптера не NAT: Network -> Adapter 1 -> Attached to: NAT.
-'@
+    throw "SSH-banner ne poluchen. Varianty: 1) V Ubuntu net OpenSSH server - zaydite v okno VM i vypolnite: sudo apt update ; sudo apt install -y openssh-server ; sudo systemctl enable --now ssh. 2) Neverny login/port - proverte -VmUser/-SshPort. 3) Set' adaptera dolzhen byt NAT."
+
 }
-Ok "SSH живой!"
+Ok "SSH zhivoy!"
 
 # ---------- 5. paramiko ----------
-Info "==> Проверяю Python + paramiko..."
+Info "==> Proveryayu Python + paramiko..."
 $PY = (Get-Command python -ErrorAction SilentlyContinue)
-if (-not $PY) { throw "Python не найден. Установите с python.org (галочка Add to PATH)." }
+if (-not $PY) { throw "Python ne nayden. Ustanovite s python.org (galochka Add to PATH)." }
 python -c "import paramiko" 2>$null | Out-Null
 if ($LASTEXITCODE -ne 0) {
     python -m pip install --quiet --user paramiko 2>&1 | Out-Null
     python -c "import paramiko" 2>$null | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "Не удалось поставить paramiko. Выполните вручную: python -m pip install --user paramiko" }
+    if ($LASTEXITCODE -ne 0) { throw "Ne udalos postavit paramiko. Vypolnite vruchnuyu: python -m pip install --user paramiko" }
 }
 Ok "OK"
 
-# ---------- 6. скачиваю проект zip (без Git) ----------
-Info "==> Скачиваю проект (zip с GitHub)..."
+# ---------- 6. skachivayu proekt zip (bez Git) ----------
+Info "==> Skachivayu proekt (zip s GitHub)..."
 $zip = Join-Path $env:TEMP "dz.zip"
 $outDir = Join-Path $env:TEMP "dz-proj"
 try {
     Invoke-WebRequest "https://codeload.github.com/Godlike-Bagheera/DZ/zip/refs/heads/main" -OutFile $zip -UseBasicParsing
 } catch {
-    Bad "codeload недоступен, пробую api.github.com..."
+    Bad "codeload nedostupen, probuyu api.github.com..."
     Invoke-WebRequest "https://api.github.com/repos/Godlike-Bagheera/DZ/zipball/main" -OutFile $zip -UseBasicParsing
 }
 if (Test-Path $outDir) { Remove-Item -Recurse -Force $outDir }
 Expand-Archive $zip -DestinationPath $outDir -Force
 $root = Get-ChildItem $outDir -Directory | Select-Object -First 1
-if (-not (Test-Path (Join-Path $root.FullName "docker-compose.yml"))) { throw "В архиве нет docker-compose.yml" }
-Ok "Проект скачан: $($root.FullName)"
+if (-not (Test-Path (Join-Path $root.FullName "docker-compose.yml"))) { throw "V arhive net docker-compose.yml" }
+Ok "Proekt skachan: $($root.FullName)"
 
-# ---------- 7. всё по SSH через python-скрипт ----------
-Info "==> Ставлю Docker внутри Ubuntu, заливаю проект, запускаю контейнеры..."
+# ---------- 7. vsyo po SSH cherez python-skript ----------
+Info "==> Stavlyu Docker vnutri Ubuntu, zalivayu proekt, zapuskayu konteynery..."
 $pyFile = Join-Path $PSScriptRoot "dz_finish.py"
-if (-not (Test-Path $pyFile)) { throw "Не найден $pyFile (рядом с finish-setup.ps1)." }
+if (-not (Test-Path $pyFile)) { throw "Ne nayden $pyFile (ryadom s finish-setup.ps1)." }
 
 & $PY $pyFile "127.0.0.1" $SshPort $VmUser $VmPass $root.FullName
-if ($LASTEXITCODE -ne 0) { throw "Удалённая настройка завершилась с ошибкой (см. вывод выше)." }
+if ($LASTEXITCODE -ne 0) { throw "Udalyonnaya nastroyka zavershilas s oshibkoy (sm. vyvod vyshe)." }
 
-# ---------- 8. финальная проверка с Windows ----------
-Info "==> Проверка с твоей Windows:"
+# ---------- 8. finalnaya proverka s Windows ----------
+Info "==> Proverka s tvoey Windows:"
 try {
     $r1 = Invoke-WebRequest "http://127.0.0.1:8000/api/hello/" -UseBasicParsing -TimeoutSec 15
     Ok "API OK: $($r1.Content)"
-} catch { Bad "API пока не отвечает: $($_.Exception.Message)" }
+} catch { Bad "API poka ne otvechaet: $($_.Exception.Message)" }
 try {
     $r2 = Invoke-WebRequest "http://127.0.0.1:8080/" -UseBasicParsing -TimeoutSec 15
-    Ok "Фронтенд OK (HTTP $($r2.StatusCode))"
-} catch { Bad "Фронтенд пока не отвечает: $($_.Exception.Message)" }
+    Ok "Frontend OK (HTTP $($r2.StatusCode))"
+} catch { Bad "Frontend poka ne otvechaet: $($_.Exception.Message)" }
 
 Write-Host ""
-Info "=== ГОТОВО ==="
-Write-Host "  Фронтенд: http://127.0.0.1:8080"
+Info "=== GOTOVO ==="
+Write-Host "  Frontend: http://127.0.0.1:8080"
 Write-Host "  API:      http://127.0.0.1:8000/api/hello/"
-Write-Host "  SSH в ВМ: ssh $VmUser@127.0.0.1 -p $SshPort  (пароль: $VmPass)"
+Write-Host "  SSH v VM: ssh $VmUser@127.0.0.1 -p $SshPort  (parol: $VmPass)"
