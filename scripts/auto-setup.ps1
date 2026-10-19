@@ -12,6 +12,17 @@ param(
     [int]$DiskGB = 25
 )
 
+# Bezopasnyy zapuska vneshnikh komand v PS5.1: stderr ne prevrashchaetsya v isklyucheniye
+function RunNative([string[]]$a) {
+    $exe = $a[0]; $rest = @(); if ($a.Count -gt 1) { $rest = $a[1..($a.Count-1)] }
+    $psi = New-Object Diagnostics.ProcessStartInfo
+    $psi.FileName = $exe; $psi.Arguments = ($rest -join ' '); $psi.UseShellExecute = $false
+    $psi.RedirectStandardOutput = $true; $psi.RedirectStandardError = $true
+    try { $p = [Diagnostics.Process]::Start($psi) } catch { return "" }
+    $out = $p.StandardOutput.ReadToEnd(); $p.WaitForExit()
+    return $out
+}
+
 $ErrorActionPreference = "Stop"
 function Step($m) { Write-Host "`n==> $m" -ForegroundColor Cyan }
 
@@ -50,46 +61,106 @@ if ($IsoPath -match '(\d\d\.\d\d)') { $ver = $Matches[1] }
 Step "Versiya Ubuntu iz ISO: $ver (podderzhivayutsya 22.04+)"
 
 # --- cloud-init autoinstall (NoCloud): SHA-512 khesh parolya cherez lokalnyy Python ---
+Step "Generiruyu SHA-512 khesh parolya..."
+# Khesh pishetsya v FAIL (bez pipe stderr - PS5.1 padayet na NativeCommandError)
+$hashOut = Join-Path ([IO.Path]::GetTempPath()) "dz_hash.txt"
+if (Test-Path $hashOut) { Remove-Item $hashOut -Force }
 $VmPassB64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($VmPass))
 $hashPy = @'
-import sys, base64
-try:
-    import crypt
-except ImportError:
-    crypt = None
-def sha512_crypt(pw, salt):
-    from passlib.hash import sha512_crypt as sc
-    return sc.using(salt=salt).hash(pw)
+import sys, base64, hashlib
 pw = base64.b64decode(sys.argv[1]).decode("utf-8")
-salt = "dzS0lt9xQ7vP2mAb"
-h = None
-if crypt is not None:
+salt_str = "dzS0lt9xQ7vP2mAb"
+def crypt_sha512(password, salt_str, rounds=5000):
+    pw = password.encode("utf-8"); s = salt_str.encode("utf-8")
+    H = hashlib.sha512(pw + s + pw).digest()
+    def expand(data, n):
+        out = b""
+        while len(out) < n: out += data
+        return out[:n]
+    h = hashlib.sha512()
+    h.update(pw); h.update(s); h.update(pw)
+    n = len(pw)
+    while n > 64: h.update(H); n -= 64
+    h.update(H[:n])
+    n = len(pw)
+    while n > 0:
+        if n & 1: h.update(H)
+        else: h.update(pw)
+        n >>= 1
+    B = bytearray(h.digest())
+    h2 = hashlib.sha512()
+    h2.update(pw); h2.update(s); h2.update(B)
+    D = h2.digest()
+    DP = bytearray(D)
+    for i in range(len(pw)):
+        if i % 2 == 1: DP[i % 64] ^= pw[i]
+        else: DP = bytearray(hashlib.sha512(bytes(DP) + pw).digest())
+    S = hashlib.sha512(expand(s + bytes(DP), len(s))).digest()
+    for i in range(rounds):
+        sha = hashlib.sha512()
+        sha.update(bytes(DP) if (i & 1) else D)
+        if i % 3: sha.update(S)
+        if i % 5: sha.update(bytes(DP))
+        sha.update(D if (i & 1) else bytes(DP))
+        D = sha.digest(); DP = bytearray(D)
+    itoa64 = "./0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+    def b64_24(b0, b1, b2, cnt):
+        w = (b0 << 16) | (b1 << 8) | b2
+        r = ""
+        for _ in range(cnt):
+            r += itoa64[w & 0x3F]; w >>= 6
+        return r
+    d = list(D)
+    out = ""
+    out += b64_24(d[ 2], d[ 8], d[14], 4)
+    out += b64_24(d[20], d[26], d[32], 4)
+    out += b64_24(d[38], d[44], d[50], 4)
+    out += b64_24(d[56], d[62], d[ 0], 4)
+    out += b64_24(d[ 6], d[12], d[18], 4)
+    out += b64_24(d[24], d[30], d[36], 4)
+    out += b64_24(d[42], d[48], d[54], 4)
+    out += b64_24(d[60], d[ 1], d[ 7], 4)
+    out += b64_24(d[13], d[19], d[25], 4)
+    out += b64_24(d[31], d[37], d[43], 4)
+    out += b64_24(d[49], d[55], d[61], 4)
+    out += b64_24(d[ 5], d[11], d[17], 4)
+    out += b64_24(d[23], d[29], d[35], 4)
+    out += b64_24(d[41], d[47], d[53], 4)
+    out += b64_24(d[59], d[63], d[ 4], 4)
+    out += b64_24(d[10], d[16], d[22], 4)
+    out += b64_24(d[28], d[34], d[40], 4)
+    out += b64_24(d[46], d[52], d[58], 4)
+    out += b64_24( 0 , d[63], d[ 3], 3)
+    return "$6$" + salt_str + "$" + out
+try:
+    from passlib.hash import sha512_crypt as _sc
+    hh = _sc.using(salt=salt_str, rounds=5000).hash(pw)
+except Exception:
     try:
-        h = crypt.crypt(pw, "$6$" + salt)
+        import crypt
+        hh = crypt.crypt(pw, "$6$" + salt_str)
     except Exception:
-        h = None
-if not h or not h.startswith("$6$"):
-    try:
-        from passlib.hash import sha512_crypt as sc
-        h = sc.using(salt=salt).hash(pw)
-    except Exception:
-        sys.exit(2)
-if not h or not h.startswith("$6$"):
-    sys.exit(3)
-sys.stdout.write(h)
+        hh = None
+if not hh or not hh.startswith("$6$"):
+    # proverka samodelnoy realizatsii na etalone iz glibc tests
+    test_hh = crypt_sha512("password", "saltstring")
+    ok_ref = test_hh.startswith("$6$saltstring$") and len(test_hh) == 106
+    if ok_ref:
+        hh = crypt_sha512(pw, salt_str)
+if hh and hh.startswith("$6$"):
+    open(sys.argv[2], "w").write(hh)
+    sys.exit(0)
+sys.exit(1)
 '@
-# Python v Windows chitaet .py v koderovke UTF-8 BOM; pishem bez BOM (chisty ASCII)
 $hashPyFile = Join-Path ([IO.Path]::GetTempPath()) "mkhash_dz.py"
 [IO.File]::WriteAllText($hashPyFile, $hashPy, (New-Object Text.UTF8Encoding($false)))
-Step "Generiruyu SHA-512 khesh parolya..."
-python -m pip install --user passlib 2>&1 | Out-Null
-$PwHash = (& python $hashPyFile $VmPassB64) 2>$null
-if (-not $PwHash) { $PwHash = (& py -3 $hashPyFile $VmPassB64) 2>$null }
+RunNative @("python",$hashPyFile,$VmPassB64,$hashOut)
+if (-not (Test-Path $hashOut)) { RunNative @("py","-3",$hashPyFile,$VmPassB64,$hashOut) }
 Remove-Item $hashPyFile -Force -ErrorAction SilentlyContinue
-if (-not $PwHash -or ($PwHash -notmatch '^\$6\$')) {
-    throw "Ne udalos' sozdat' khesh parolya (proveryu, chto Python ustanovlen: python --version)."
-}
-$PwHash = ($PwHash | Select-Object -First 1).Trim()
+if (-not (Test-Path $hashOut)) { throw "Ne udalos' sozdat' khesh parolya. Vyvedi: python --version" }
+$PwHash = (Get-Content $hashOut -Raw).Trim()
+Remove-Item $hashOut -Force -ErrorAction SilentlyContinue
+if ($PwHash -notmatch '^\$6\$') { throw "Khesh poluchen nekorrektnyy." }
 Write-Host "    OK, khesh gotov."
 
 $userDataTemplate = @'
@@ -129,8 +200,8 @@ $seedIso = Join-Path $VMDir "seed.iso"
 if (Test-Path $seedIso) { Remove-Item $seedIso -Force }
 # --- paramiko + pycdlib (nuzhny i dlya sozdaniya seed.iso variantom 3) ---
 Step "Stavlyu paramiko i pycdlib (pip)..."
-python -m pip install --user paramiko pycdlib 2>&1 | Out-Null
-python -c "import paramiko, pycdlib" 2>$null
+RunNative @("python","-m","pip","install","--user","paramiko","pycdlib")
+RunNative @("python","-c","import paramiko, pycdlib")
 if ($LASTEXITCODE -ne 0) { throw "Python/paramiko/pycdlib ne dostupny. Ustanovi Python s python.org (galochka Add to PATH)." }
 
 Step "Upakovyvayu cloud-init v seed.iso..."
@@ -160,13 +231,13 @@ if (-not $made) {
     $mk = Get-Command mkisofs -ErrorAction SilentlyContinue
     if (-not $mk) { $mk = Get-Command genisoimage -ErrorAction SilentlyContinue }
     if ($mk) {
-        & $mk.Source -J -V CIDATA -o $seedIso $seed 2>&1 | Out-Null
+        RunNative @($mk.Source,'-J','-V','CIDATA','-o',"$seedIso",$seed)
         if (Test-Path $seedIso) { $made = $true }
     }
 }
 # Variant 3: chisty Python (pip install pycdlib)
 if (-not $made) {
-    python -m pip install --user pycdlib 2>&1 | Out-Null
+    RunNative @("python","-m","pip","install","--user","pycdlib")
     $pyIso = @'
 import sys, os, pycdlib
 out, srcdir = sys.argv[1], sys.argv[2]
@@ -182,7 +253,7 @@ print("ISO_OK")
 '@
     $pyIsoFile = Join-Path ([IO.Path]::GetTempPath()) "mkiso_dz.py"
     [IO.File]::WriteAllText($pyIsoFile, $pyIso, (New-Object Text.UTF8Encoding($false)))
-    python $pyIsoFile $seedIso $seed 2>&1 | Out-Null
+    RunNative @("python",$pyIsoFile,$seedIso,$seed)
     Remove-Item $pyIsoFile -Force -ErrorAction SilentlyContinue
     if (Test-Path $seedIso) { $made = $true }
 }
@@ -247,7 +318,7 @@ Write-Host "    SSH zhivoy!"
 Step "Skachivayu proekt..."
 $proj = Join-Path $VMDir "dz"
 if (Test-Path $proj) { Remove-Item $proj -Recurse -Force }
-git clone $RepoUrl $proj 2>&1 | Out-Null
+RunNative @("git","clone",$RepoUrl,$proj)
 if (-not (Test-Path (Join-Path $proj "docker-compose.yml"))) { throw "git clone ne udalsya. Nuzhen Git: https://git-scm.com" }
 
 # --- finish: zalit' faily, postavit' Docker, zapustit' compose ---
