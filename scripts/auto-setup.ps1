@@ -9,7 +9,8 @@ param(
     [string]$VmName = "UbuntuServ",
     [string]$RepoUrl = "https://github.com/Godlike-Bagheera/DZ.git",
     [int]$RamMB = 2048,
-    [int]$DiskGB = 25
+    [int]$DiskGB = 25,
+    [switch]$SkipInstall
 )
 
 # Bezopasnyy zapuska vneshnikh komand v PS5.1: stderr ne prevrashchaetsya v isklyucheniye
@@ -295,24 +296,47 @@ print("ISO_OK")
 }
 if (-not (Test-Path $seedIso)) { throw "seed.iso ne sozdan" }
 
-# --- VM: chistoe peresozdanie ---
+# --- VM: sozdanie ili obnovlenie ---
+$diskExists = (Test-Path $vdi) -and ((Get-Item $vdi).Length -gt 500MB)
+$reinstall = -not $diskExists -or -not $SkipInstall
 $existing = & $VBM list vms | Select-String ('"' + $VmName + '"')
-if ($existing) {
+if ($existing -and $reinstall) {
     Step "VM '$VmName' uzhe est' - udalyayu dlya chistoy sborki..."
     try { & $VBM controlvm $VmName poweroff 2>$null | Out-Null } catch {}
     Start-Sleep -Seconds 3
     & $VBM unregistervm $VmName --delete | Out-Null
     Start-Sleep -Seconds 2
 }
-Step "Sozdayu VM '$VmName'..."
-& $VBM createvm --name $VmName --ostype "Ubuntu_64" --register | Out-Null
-& $VBM createhd --filename $vdi --size ([int]($DiskGB*1024)) | Out-Null
+if (-not $existing) {
+    Step "Sozdayu VM '$VmName'..."
+    & $VBM createvm --name $VmName --ostype "Ubuntu_64" --register | Out-Null
+} elseif ($reinstall) {
+    Step "VM '$VmName' uzhe zaregistrirovana - peresozdam disk..."
+} else {
+    Step "Prodelayavayu ustanovku: gruzhu suschestvuyushchuyu VM '$VmName' s diska..."
+}
+if ($reinstall) {
+    if (Test-Path $vdi) { Remove-Item $vdi -Force -ErrorAction SilentlyContinue }
+    & $VBM createhd --filename $vdi --size ([int]($DiskGB*1024)) | Out-Null
+}
 & $VBM modifyvm $VmName --memory $RamMB --cpus 2 --nic1 nat --audio none --graphicscontroller vga --vram 16
-& $VBM storagectl $VmName --name "SATA" --add sata --controller IntelAhci | Out-Null
+$ctls = (& $VBM showvminfo $VmName --machinereadable) -join "`n"
+if ($ctls -notmatch 'storagecontroller-name="SATA"') {
+    & $VBM storagectl $VmName --name "SATA" --add sata --controller IntelAhci | Out-Null
+}
 & $VBM storageattach $VmName --storagectl "SATA" --port 0 --device 0 --type hdd --medium $vdi | Out-Null
-& $VBM storagectl $VmName --name "IDE" --add ide | Out-Null
-& $VBM storageattach $VmName --storagectl "IDE" --port 0 --device 0 --type dvddrive --medium $IsoPath | Out-Null
-& $VBM storageattach $VmName --storagectl "IDE" --port 1 --device 0 --type dvddrive --medium $seedIso | Out-Null
+if ($ctls -notmatch 'storagecontroller-name="IDE"') {
+    & $VBM storagectl $VmName --name "IDE" --add ide | Out-Null
+}
+if ($reinstall) {
+    & $VBM storageattach $VmName --storagectl "IDE" --port 0 --device 0 --type dvddrive --medium $IsoPath | Out-Null
+    & $VBM storageattach $VmName --storagectl "IDE" --port 1 --device 0 --type dvddrive --medium $seedIso | Out-Null
+    & $VBM modifyvm $VmName --boot1 dvd --boot2 disk --bootnone
+} else {
+    & $VBM storageattach $VmName --storagectl "IDE" --port 0 --device 0 --type dvddrive --medium none | Out-Null
+    & $VBM storageattach $VmName --storagectl "IDE" --port 1 --device 0 --type dvddrive --medium none | Out-Null
+    & $VBM modifyvm $VmName --boot1 disk --boot2 dvd --bootnone
+}
 Write-Host "    VM sozdana."
 
 # --- NAT port forwarding ---
@@ -346,7 +370,19 @@ while ((Get-Date) -lt $deadline) {
     Write-Host "    ...zhdu ($waited sek.)"
     Start-Sleep -Seconds 15
 }
-if (-not $ok) { throw "SSH tak i ne podnyalsya. Smotri okno VM: vozmozhno avtoustoika stopnutsya na voprose - prisli skrinshot." }
+if (-not $ok) {
+    Write-Host ""
+    Write-Host "[!] SSH ne podooshel za 30 minut. Skoree vsego avtoustinovka ostanovilas." -ForegroundColor Yellow
+    Write-Host "    Otkroy okno VirtualBox i posmotri, chto tam napisano. Chasto pomogaet:"
+    Write-Host "      1) V okne VM nazhmi Enter (esli vidno 'continue' / 'prodlhit' / 'reboot')."
+    Write-Host "      2) Esli vidno menu gruba (GRUB) - vyberi pervyy punkt i Enter."
+    Write-Host "      3) Esli ustanovka zavisla na 'Begin loading essential drivers':"
+    Write-Host "         - v menyu VirtualBox: Machine -> Reset, i zapusti skript povtorno s klyuchom -SkipInstall"
+    Write-Host "           (Ubuntu uzhe na diske, prosto zagruzimsya s nego):"
+    Write-Host "           .\scripts\auto-setup.ps1 -IsoPath ... -VmPass ... -SkipInstall"
+    Write-Host "    Prisli skrinshot okna VM, esli nichego iz etogo ne pomoglo."
+    throw "SSH ne podnyalsya."
+}
 Write-Host "    SSH zhivoy!"
 
 
