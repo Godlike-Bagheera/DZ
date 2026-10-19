@@ -49,16 +49,50 @@ $ver = "24.04"
 if ($IsoPath -match '(\d\d\.\d\d)') { $ver = $Matches[1] }
 Step "Versiya Ubuntu iz ISO: $ver (podderzhivayutsya 22.04+)"
 
-# --- cloud-init autoinstall (NoCloud): parol' peredotsya base64, khesh schitaetsya na VM ---
+# --- cloud-init autoinstall (NoCloud): SHA-512 khesh parolya cherez lokalnyy Python ---
 $VmPassB64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($VmPass))
-# py-gen koda: sohranim otdelno, perebasim v base64, chtoby ne slomat' YAML kvotami
-$pyGenSrc = @'
-import crypt, base64, sys
-print(crypt.crypt(base64.b64decode(sys.argv[1]).decode(), crypt.METHOD_SHA512))
+$hashPy = @'
+import sys, base64
+try:
+    import crypt
+except ImportError:
+    crypt = None
+def sha512_crypt(pw, salt):
+    from passlib.hash import sha512_crypt as sc
+    return sc.using(salt=salt).hash(pw)
+pw = base64.b64decode(sys.argv[1]).decode("utf-8")
+salt = "dzS0lt9xQ7vP2mAb"
+h = None
+if crypt is not None:
+    try:
+        h = crypt.crypt(pw, "$6$" + salt)
+    except Exception:
+        h = None
+if not h or not h.startswith("$6$"):
+    try:
+        from passlib.hash import sha512_crypt as sc
+        h = sc.using(salt=salt).hash(pw)
+    except Exception:
+        sys.exit(2)
+if not h or not h.startswith("$6$"):
+    sys.exit(3)
+sys.stdout.write(h)
 '@
-$pyGenB64 = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes($pyGenSrc))
+# Python v Windows chitaet .py v koderovke UTF-8 BOM; pishem bez BOM (chisty ASCII)
+$hashPyFile = Join-Path ([IO.Path]::GetTempPath()) "mkhash_dz.py"
+[IO.File]::WriteAllText($hashPyFile, $hashPy, (New-Object Text.UTF8Encoding($false)))
+Step "Generiruyu SHA-512 khesh parolya..."
+python -m pip install --user passlib 2>&1 | Out-Null
+$PwHash = (& python $hashPyFile $VmPassB64) 2>$null
+if (-not $PwHash) { $PwHash = (& py -3 $hashPyFile $VmPassB64) 2>$null }
+Remove-Item $hashPyFile -Force -ErrorAction SilentlyContinue
+if (-not $PwHash -or ($PwHash -notmatch '^\$6\$')) {
+    throw "Ne udalos' sozdat' khesh parolya (proveryu, chto Python ustanovlen: python --version)."
+}
+$PwHash = ($PwHash | Select-Object -First 1).Trim()
+Write-Host "    OK, khesh gotov."
 
-$userData = @"
+$userDataTemplate = @'
 #cloud-config
 autoinstall:
   version: 1
@@ -67,7 +101,7 @@ autoinstall:
   identity:
     hostname: dzserver
     username: stud
-    password: '`$6`$round5`$placeholder'
+    password: '__PW_HASH__'
   ssh:
     install-server: true
     allow-pw: true
@@ -81,14 +115,8 @@ autoinstall:
   late-commands:
     - echo 'stud ALL=(ALL) NOPASSWD:ALL' > /target/etc/sudoers.d/stud
     - chmod 440 /target/etc/sudoers.d/stud
-    - curtin in-target -- sh -c 'echo $VmPassB64 | base64 -d > /tmp/p.b64'
-    - curtin in-target -- sh -c 'echo $pyGenB64 | base64 -d > /tmp/ph.py'
-    - curtin in-target -- sh -c 'python3 -c "import base64,crypt;pw=base64.b64decode(open(\"/tmp/p.b64\").read()).decode();h=crypt.crypt(pw,crypt.METHOD_SHA512);open(\"/tmp/h.txt\",\"w\").write(h)"'
-    - curtin in-target -- sh -c 'usermod -p "\$(cat /tmp/h.txt)" stud'
-    - curtin in-target -- rm -f /tmp/p.b64 /tmp/ph.py /tmp/h.txt
-"@
-# zamena bahrev-ekranov backtick-mesta: PowerShell vychedit $ kak peremennye - ekraniruem
-$userData = $userData.Replace('`$', '$')
+'@
+$userData = $userDataTemplate.Replace('__PW_HASH__', $PwHash)
 
 $seed = Join-Path $VMDir "seed"
 if (Test-Path $seed) { Remove-Item $seed -Recurse -Force }
@@ -99,7 +127,15 @@ Set-Content -Path (Join-Path $seed "meta-data") -Value "instance-id: iid-dzvm`nl
 # --- sozdat' ISO bezarkhivno cherez ImageMaster API (Win10+) ---
 $seedIso = Join-Path $VMDir "seed.iso"
 if (Test-Path $seedIso) { Remove-Item $seedIso -Force }
+# --- paramiko + pycdlib (nuzhny i dlya sozdaniya seed.iso variantom 3) ---
+Step "Stavlyu paramiko i pycdlib (pip)..."
+python -m pip install --user paramiko pycdlib 2>&1 | Out-Null
+python -c "import paramiko, pycdlib" 2>$null
+if ($LASTEXITCODE -ne 0) { throw "Python/paramiko/pycdlib ne dostupny. Ustanovi Python s python.org (galochka Add to PATH)." }
+
 Step "Upakovyvayu cloud-init v seed.iso..."
+$made = $false
+# Variant 1: IMAPI2 FS Image COM (est' vo vsekh Windows 8/10/11)
 try {
     $imClass = [Type]::GetTypeFromCLSID([Guid]"27354125-9F97-4B3A-9E2B-190627258484")
     $im = [Activator]::CreateInstance($imClass)
@@ -112,12 +148,43 @@ try {
         $ms = New-Object IO.MemoryStream(,$bytes)
         $fs.WriteStream($ms, $bytes.Length, 0) | Out-Null
         $fs.Release()
+        $ms.Dispose()
     }
     $im.EndRegisterImage($stream) | Out-Null
     $im.CloseImage($stream) | Out-Null
     [Runtime.InteropServices.Marshal]::ReleaseComObject($im) | Out-Null
-} catch {
-    throw "Ne udalos' sozdat' seed.iso: $($_.Exception.Message). Ustanovi Windows 10+ i povtori."
+    if (Test-Path $seedIso) { $made = $true }
+} catch { Write-Host "    IMAPI2 ne srabotal: $($_.Exception.Message)" }
+# Variant 2: mkisofs/genisoimage esli on gde-to v PATH
+if (-not $made) {
+    $mk = Get-Command mkisofs -ErrorAction SilentlyContinue
+    if (-not $mk) { $mk = Get-Command genisoimage -ErrorAction SilentlyContinue }
+    if ($mk) {
+        & $mk.Source -J -V CIDATA -o $seedIso $seed 2>&1 | Out-Null
+        if (Test-Path $seedIso) { $made = $true }
+    }
+}
+# Variant 3: chisty Python (pip install pycdlib)
+if (-not $made) {
+    python -m pip install --user pycdlib 2>&1 | Out-Null
+    $pyIso = @'
+import sys, os, pycdlib
+out, srcdir = sys.argv[1], sys.argv[2]
+iso = pycdlib.PyCdlib()
+iso.new(vol_ident="CIDATA", rock_ridge="1.10", joliet=3)
+for name in sorted(os.listdir(srcdir)):
+    fp = os.path.join(srcdir, name)
+    if os.path.isfile(fp):
+        iso.add_file(fp, rr_name=name.encode(), joliet_path="/" + name)
+iso.write(out)
+iso.close()
+print("ISO_OK")
+'@
+    $pyIsoFile = Join-Path ([IO.Path]::GetTempPath()) "mkiso_dz.py"
+    [IO.File]::WriteAllText($pyIsoFile, $pyIso, (New-Object Text.UTF8Encoding($false)))
+    python $pyIsoFile $seedIso $seed 2>&1 | Out-Null
+    Remove-Item $pyIsoFile -Force -ErrorAction SilentlyContinue
+    if (Test-Path $seedIso) { $made = $true }
 }
 if (-not (Test-Path $seedIso)) { throw "seed.iso ne sozdan" }
 
@@ -175,11 +242,6 @@ while ((Get-Date) -lt $deadline) {
 if (-not $ok) { throw "SSH tak i ne podnyalsya. Smotri okno VM: vozmozhno avtoustoika stopnutsya na voprose - prisli skrinshot." }
 Write-Host "    SSH zhivoy!"
 
-# --- paramiko ---
-Step "Stavlyu paramiko (pip)..."
-python -m pip install --user paramiko 2>&1 | Out-Null
-python -c "import paramiko" 2>$null
-if ($LASTEXITCODE -ne 0) { throw "Python/paramiko ne dostupny. Ustanovi Python s python.org (galochka Add to PATH)." }
 
 # --- proekt ---
 Step "Skachivayu proekt..."
@@ -227,13 +289,16 @@ for root,dirs,files in os.walk(src):
     for f in files:
         sftp.put(os.path.join(root,f), relr+'/'+f)
 sftp.close()
-print('--- faily zality, proveryayu docker ---')
+print('--- faily zality, chinityu image-tagi (Docker Hub ne treb. imya vlastelina) ---')
+run("sed -i 's#image: .*/backend-image:latest#image: dz-backend:latest#; s#image: .*/frontend-image:latest#image: dz-frontend:latest#' ~/dz/docker-compose.yml")
+print('proveryayu docker...')
 rc,_=run('docker --version')
 if rc!=0:
     print('stavlyu docker...')
     run('curl -fsSL https://get.docker.com | sudo sh',1800)
     run('sudo usermod -aG docker stud')
 print('zapuskayu compose...')
+run('sudo systemctl enable --now docker; sleep 2; sudo systemctl is-active docker')
 run('cd ~/dz && sudo docker compose up -d --build',2400)
 time.sleep(8)
 run('sudo docker compose -f ~/dz/docker-compose.yml ps')
