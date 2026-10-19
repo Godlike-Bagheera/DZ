@@ -181,7 +181,7 @@ $pyFile = Join-Path $PSScriptRoot "dz_finish.py"
 if (-not (Test-Path $pyFile)) { throw "Ne nayden $pyFile (ryadom s finish-setup.ps1)." }
 
 if ($Dbg) { $env:DZ_DEBUG = "1" } else { Remove-Item Env:\DZ_DEBUG -ErrorAction SilentlyContinue }
-Info ("  parametry: host=127.0.0.1 port={0} user='{1}' parol='{2}' (dlinа {3}) proekt={4}" -f $SshPort, $VmUser, ("*" * $VmPass.Length), $VmPass.Length, $root.FullName)
+Info ("  parametry: host=127.0.0.1 port={0} user='{1}' parol='{2}' (dlina {3}) proekt={4}" -f $SshPort, $VmUser, ("*" * $VmPass.Length), $VmPass.Length, $root.FullName)
 & $PY $pyFile "127.0.0.1" $SshPort $VmUser $VmPass $root.FullName $LogFile
 $pyExit = $LASTEXITCODE
 if ($pyExit -eq 2) {
