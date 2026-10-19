@@ -1,4 +1,4 @@
-# auto-setup.ps1 — полный автомат для Windows (VirtualBox + Ubuntu Server)
+﻿# auto-setup.ps1 — полный автомат для Windows (VirtualBox + Ubuntu Server)
 # Использование:
 #   1) Установи VirtualBox и скачай ISO: https://ubuntu.com/download/server (ubuntu-24.04-live-server-amd64.iso)
 #   2) Запусти ЭТОТ скрипт от обычного пользователя в PowerShell:
@@ -21,7 +21,22 @@ function Step($m) { Write-Host "`n==> $m" -ForegroundColor Cyan }
 # --- найти VBoxManage ---
 Step "Ищу VirtualBox..."
 $VBM = "C:\Program Files\Oracle\VirtualBox\VBoxManage.exe"
-if (-not (Test-Path $VBM)) { $VBM = (Get-Command VBoxManage -ErrorAction SilentlyContinue)?.Source }
+$cmd = Get-Command VBoxManage -ErrorAction SilentlyContinue
+if ($cmd) { $VBM = $cmd.Source }
+if (-not $VBM) {
+    $extraPaths = @(
+        "D:\VB\VirtualBox.exe",
+        "D:\VirtualBox\VBoxManage.exe",
+        "C:\Program Files\Oracle\VirtualBox\VBoxManage.exe"
+    )
+    foreach ($ep in $extraPaths) { if (Test-Path $ep) { $VBM = $ep; break } }
+}
+if (-not (Test-Path $VBM -ErrorAction SilentlyContinue)) {
+    # если нашли просто VirtualBox.exe — ищем VBoxManage.exe рядом
+    $dir = Split-Path $VBM -Parent
+    $cand = Join-Path $dir "VBoxManage.exe"
+    if (Test-Path $cand) { $VBM = $cand }
+}
 if (-not $VBM) { throw "VirtualBox не найден. Установи: https://www.virtualbox.org/wiki/Downloads и повтори запуск." }
 Write-Host "    OK: $VBM"
 
@@ -70,6 +85,14 @@ $cid = Join-Path $VMDir "user-data"
 Set-Content -Path $cid -Value $userData -Encoding ASCII -NoNewline
 
 # --- создать ВМ ---
+$existing = & $VBM list vms | Select-String ('"' + $VmName + '"')
+if ($existing) {
+    Step "ВМ '$VmName' уже есть — удаляю её для чистой пересборки..."
+    try { & $VBM controlvm $VmName poweroff 2>$null | Out-Null } catch {}
+    Start-Sleep -Seconds 3
+    & $VBM unregistervm $VmName --delete | Out-Null
+    Start-Sleep -Seconds 2
+}
 Step "Создаю ВМ '$VmName'..."
 & $VBM createvm --name $VmName --ostype "Ubuntu_64" --register | Out-Null
 & $VBM createhd --filename $vdi --size $([int]($DiskGB*1024)) | Out-Null
