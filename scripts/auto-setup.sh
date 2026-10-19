@@ -43,24 +43,29 @@ case "$STATE" in
 esac
 bash "$PROJECT_DIR/scripts/vm-ports.sh" "$VM_NAME" || { echo "[!] Не удалось настроить порты."; exit 1; }
 
-echo "==> 2. Запускаю ВМ (headless) и жду SSH на $VM_HOST:$VM_SSH_PORT (до 4 мин)..."
-"$VBM" startvm "$VM_NAME" --type headless >/dev/null
+echo "==> 2. Запускаю ВМ и жду реальный SSH-баннер на $VM_HOST:$VM_SSH_PORT (до 5 мин)..."
+echo "    (окно VirtualBox с консолью ВМ — для наглядности; закрыть можно после)"
+"$VBM" startvm "$VM_NAME" >/dev/null 2>&1 || "$VBM" startvm "$VM_NAME" --type headless >/dev/null
 OK=0
-for i in $(seq 1 48); do
-  if "$PY" "$PROJECT_DIR/scripts/tcp_check.py" "$VM_HOST" "$VM_SSH_PORT" >/dev/null 2>&1; then OK=1; break; fi
+for i in $(seq 1 60); do
+  # порт мало открыть — дождёмся настоящего баннера sshd
+  if "$PY" "$PROJECT_DIR/scripts/ssh_auto.py" run "$VM_HOST" "$VM_SSH_PORT" "$VM_USER" "$VM_PASS" "echo SSH_READY" 2>/dev/null | grep -q SSH_READY; then
+    OK=1; break
+  fi
   sleep 5
 done
 if [ "$OK" != 1 ]; then
   echo ""
-  echo "[!] SSH-порт за 4 минуты так и не открылся."
-  echo "    Most likely внутри Ubuntu НЕ стоит OpenSSH server. Открой окно VirtualBox,"
-  echo "    войди (логин $VM_USER, пароль от VM_PASS) и выполни там:"
+  echo "[!] SSH за 5 минут не поднялся (порт может открываться, но sshd внутри Ubuntu отсутствует)."
+  echo "    РЕШЕНИЕ: в окне VirtualBox (уже открыто) войди в систему"
+  echo "    (логин $VM_USER, пароль — тот, что задавал при установке Ubuntu) и выполни ДВЕ команды:"
   echo "      sudo apt update && sudo apt install -y openssh-server"
   echo "      sudo systemctl enable --now ssh"
-  echo "    Потом повтори: VM_PASS=... bash scripts/auto-setup.sh"
+  echo "    Если sudo спросит пароль — введи его (он же VM_PASS)."
+  echo "    После этого повтори: VM_PASS=... bash scripts/auto-setup.sh"
   exit 1
 fi
-echo "    Порт открыт."
+echo "    SSH работает, вход выполнен."
 
 echo "==> 3. Ставлю paramiko в ~/.local (без sudo)..."
 if ! "$PY" -c "import paramiko" 2>/dev/null; then
