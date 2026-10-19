@@ -350,12 +350,37 @@ if (-not $ok) { throw "SSH tak i ne podnyalsya. Smotri okno VM: vozmozhno avtous
 Write-Host "    SSH zhivoy!"
 
 
-# --- proekt ---
+# --- proekt: bez git (zip-archive c GitHub; esli net - lokalnaya kopiya okolo skripta) ---
 Step "Skachivayu proekt..."
 $proj = Join-Path $VMDir "dz"
 if (Test-Path $proj) { Remove-Item $proj -Recurse -Force }
-RunNative @("git","clone",$RepoUrl,$proj)
-if (-not (Test-Path (Join-Path $proj "docker-compose.yml"))) { throw "git clone ne udalsya. Nuzhen Git: https://git-scm.com" }
+New-Item -ItemType Directory -Force -Path $proj | Out-Null
+$zipOk = $false
+try {
+    $repoName = ($RepoUrl -replace '\.git$','') -replace '^https://github\.com/',''
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    $zipUrl = "https://codeload.github.com/$repoName/zip/refs/heads/main"
+    $zipFile = Join-Path $VMDir "dz.zip"
+    Invoke-WebRequest -Uri $zipUrl -OutFile $zipFile -UseBasicParsing -TimeoutSec 120
+    Expand-Archive -Path $zipFile -DestinationPath $VMDir -Force
+    $inner = Get-ChildItem -Path $VMDir -Directory -Filter "DZ-main*" | Select-Object -First 1
+    if (-not $inner) { $inner = Get-ChildItem -Path $VMDir -Directory | Where-Object { Test-Path (Join-Path $_.FullName "docker-compose.yml") } | Select-Object -First 1 }
+    if ($inner) {
+        Copy-Item -Path (Join-Path $inner.FullName "*") -Destination $proj -Recurse -Force
+        $zipOk = $true
+    }
+} catch { Write-Host "    zip-ne-poluchilsya: $($_.Exception.Message)" }
+if (-not $zipOk) {
+    $local = Join-Path (Split-Path $PSScriptRoot -Parent) "docker-compose.yml"
+    if (Test-Path $local) {
+        Write-Host "    beru proekt iz lokalnoy papki (rjadom so skriptom)"
+        $srcDir = Split-Path $local -Parent
+        Get-ChildItem -Path $srcDir -Force | Where-Object { $_.Name -ne ".git" } | ForEach-Object {
+            Copy-Item -Path $_.FullName -Destination $proj -Recurse -Force
+        }
+    }
+}
+if (-not (Test-Path (Join-Path $proj "docker-compose.yml"))) { throw "Ne udalos poluchit faily proekta." }
 
 # --- finish: zalit' faily, postavit' Docker, zapustit' compose ---
 Step "Zalivayu proekt v VM, stavlyu Docker, zapuskayu compose..."
