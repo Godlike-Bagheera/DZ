@@ -23,6 +23,29 @@ function RunNative([string[]]$a) {
     return $out
 }
 
+
+# nayti Python (python/python3/py), c uchetom WindowsApps-shimy i MS Store
+function Find-Python {
+    $candidates = @()
+    foreach ($n in @("python","python3","py")) {
+        $c = Get-Command $n -ErrorAction SilentlyContinue
+        if ($c) { $candidates += $c.Source }
+    }
+    $auto = Join-Path $env:LOCALAPPDATA "Programs\Python"
+    if (Test-Path $auto) {
+        $candidates += (Get-ChildItem $auto -Recurse -Filter python.exe -ErrorAction SilentlyContinue | Select-Object -First 3 -ExpandProperty FullName)
+    }
+    foreach ($exe in $candidates) {
+        if (-not $exe -or -not (Test-Path $exe)) { continue }
+        if ($exe -match "WindowsApps") { continue }   # shim iz Microsoft Store - ne rabochiy
+        try {
+            $v = & $exe -c "import sys;print(sys.version_info[0])" 2>$null
+            if ($LASTEXITCODE -eq 0 -and "$v".Trim() -match "^\d+$") { return $exe }
+        } catch {}
+    }
+    return $null
+}
+
 $ErrorActionPreference = "Stop"
 function Step($m) { Write-Host "`n==> $m" -ForegroundColor Cyan }
 
@@ -61,6 +84,10 @@ if ($IsoPath -match '(\d\d\.\d\d)') { $ver = $Matches[1] }
 Step "Versiya Ubuntu iz ISO: $ver (podderzhivayutsya 22.04+)"
 
 # --- cloud-init autoinstall (NoCloud): SHA-512 khesh parolya cherez lokalnyy Python ---
+Step "Ishu Python..."
+$PY = Find-Python
+if ($PY) { Write-Host "    OK: $PY" } else { Write-Host "    Python ne nayden (ne krym, no luchhe postavit')" }
+
 Step "Generiruyu SHA-512 khesh parolya..."
 # Khesh pishetsya v FAIL (bez pipe stderr - PS5.1 padayet na NativeCommandError)
 $hashOut = Join-Path ([IO.Path]::GetTempPath()) "dz_hash.txt"
@@ -154,8 +181,8 @@ sys.exit(1)
 '@
 $hashPyFile = Join-Path ([IO.Path]::GetTempPath()) "mkhash_dz.py"
 [IO.File]::WriteAllText($hashPyFile, $hashPy, (New-Object Text.UTF8Encoding($false)))
-RunNative @("python",$hashPyFile,$VmPassB64,$hashOut)
-if (-not (Test-Path $hashOut)) { RunNative @("py","-3",$hashPyFile,$VmPassB64,$hashOut) }
+if (-not $PY) { Write-Host "    [!] Python ne nayden - preskayu generatsiyu khesha lokalno" }
+else { RunNative @($PY,$hashPyFile,$VmPassB64,$hashOut) }
 Remove-Item $hashPyFile -Force -ErrorAction SilentlyContinue
 if (-not (Test-Path $hashOut)) { throw "Ne udalos' sozdat' khesh parolya. Vyvedi: python --version" }
 $PwHash = (Get-Content $hashOut -Raw).Trim()
@@ -199,10 +226,18 @@ Set-Content -Path (Join-Path $seed "meta-data") -Value "instance-id: iid-dzvm`nl
 $seedIso = Join-Path $VMDir "seed.iso"
 if (Test-Path $seedIso) { Remove-Item $seedIso -Force }
 # --- paramiko + pycdlib (nuzhny i dlya sozdaniya seed.iso variantom 3) ---
-Step "Stavlyu paramiko i pycdlib (pip)..."
-RunNative @("python","-m","pip","install","--user","paramiko","pycdlib")
-RunNative @("python","-c","import paramiko, pycdlib")
-if ($LASTEXITCODE -ne 0) { throw "Python/paramiko/pycdlib ne dostupny. Ustanovi Python s python.org (galochka Add to PATH)." }
+Step "Proveryayu paramiko (dlya SSH)..."
+$haveParamiko = $false
+if ($PY) {
+    RunNative @($PY,"-c","import paramiko")
+    if ($LASTEXITCODE -eq 0) { $haveParamiko = $true }
+    else {
+        RunNative @($PY,"-m","pip","install","--user","paramiko")
+        RunNative @($PY,"-c","import paramiko")
+        if ($LASTEXITCODE -eq 0) { $haveParamiko = $true }
+    }
+}
+if (-not $haveParamiko) { throw "Python ili paramiko nedostupny. Ustanovi Python s python.org (galochka Add to PATH), zapusti PowerShell ZANOVO i povtorite komandu." }
 
 Step "Upakovyvayu cloud-init v seed.iso..."
 $made = $false
@@ -236,24 +271,25 @@ if (-not $made) {
     }
 }
 # Variant 3: chisty Python (pip install pycdlib)
-if (-not $made) {
-    RunNative @("python","-m","pip","install","--user","pycdlib")
+if (-not $made -and $PY) {
+    RunNative @($PY,"-m","pip","install","--user","pycdlib")
     $pyIso = @'
 import sys, os, pycdlib
 out, srcdir = sys.argv[1], sys.argv[2]
+MAP = {"user-data": "USER_DATA.;1", "meta-data": "META_DAT.;1", "network-config": "NETWOR~1.;1"}
 iso = pycdlib.PyCdlib()
-iso.new(vol_ident="CIDATA", rock_ridge="1.10", joliet=3)
+iso.new(vol_ident="CIDATA", interchange_level=3, joliet=3)
 for name in sorted(os.listdir(srcdir)):
     fp = os.path.join(srcdir, name)
-    if os.path.isfile(fp):
-        iso.add_file(fp, rr_name=name.encode(), joliet_path="/" + name)
+    if os.path.isfile(fp) and name in MAP:
+        iso.add_file(fp, iso_path="/" + MAP[name], joliet_path="/" + name)
 iso.write(out)
 iso.close()
 print("ISO_OK")
 '@
     $pyIsoFile = Join-Path ([IO.Path]::GetTempPath()) "mkiso_dz.py"
     [IO.File]::WriteAllText($pyIsoFile, $pyIso, (New-Object Text.UTF8Encoding($false)))
-    RunNative @("python",$pyIsoFile,$seedIso,$seed)
+    RunNative @($PY,$pyIsoFile,$seedIso,$seed)
     Remove-Item $pyIsoFile -Force -ErrorAction SilentlyContinue
     if (Test-Path $seedIso) { $made = $true }
 }
@@ -382,7 +418,7 @@ print('FINISH_OK')
 $pyFile = Join-Path $VMDir "finish.py"
 [IO.File]::WriteAllText($pyFile, $py, (New-Object Text.UTF8Encoding($false)))
 $env:VMP = $VmPass
-python $pyFile $proj
+& $PY $pyFile $proj
 if ($LASTEXITCODE -ne 0) { throw "Finishnaya nastroyka ne zavershilas'. Prisley vyvod vyshe." }
 
 Step "GOTOVO! Otkroy v brauzere:"
