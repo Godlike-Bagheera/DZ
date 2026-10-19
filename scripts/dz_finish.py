@@ -4,6 +4,8 @@
 import sys, time, os, paramiko, pathlib, logging
 
 host, port, user, pw, projdir = sys.argv[1], int(sys.argv[2]), sys.argv[3], sys.argv[4], sys.argv[5]
+IS_ROOT = (sys.argv[3] == "root")
+DC = "docker" if IS_ROOT else "sudo docker"
 logfile = sys.argv[6] if len(sys.argv) > 6 else os.path.join(os.path.expanduser("~"), "dz-finish.log")
 
 logging.basicConfig(
@@ -75,10 +77,12 @@ def sudo_once(inner):
     # передаём пароль через stdin, безопаснее чем echo в командной строке
     import base64
     b64 = base64.b64encode(inner.encode()).decode()
-    full = f"echo {b64} | base64 -d > /tmp/_dzcmd.sh && sudo -S -p '' bash /tmp/_dzcmd.sh"
+    runner = "bash /tmp/_dzcmd.sh" if IS_ROOT else "sudo -S -p '' bash /tmp/_dzcmd.sh"
+    full = f"echo {b64} | base64 -d > /tmp/_dzcmd.sh && {runner}"
     log.info("$ [sudo] %s", inner[:100])
     _, out, err = cli.exec_command(full, timeout=900)
-    out.channel.sendall((pw + "\n").encode())
+    if not IS_ROOT:
+        out.channel.sendall((pw + "\n").encode())
     o = out.read().decode(errors="replace")
     e = err.read().decode(errors="replace")
     rc = out.channel.recv_exit_status()
@@ -102,26 +106,31 @@ if rc != 0:
     log.error("    - в ВМ нет интернета (проверь NAT-адаптер в VirtualBox);")
     log.error("    - пользователь '%s' вообще не существует в Ubuntu.", user)
 
-log.info("==> ШАГ 2/6: Разрешаю NOPASSWD sudo для %s...", user)
-sudo_line = f"{user} ALL=(ALL) NOPASSWD:ALL"
-import base64 as _b64
-_b64line = _b64.b64encode(sudo_line.encode()).decode()
-# сначала проверим, что пользователь реально есть и пароль сработал
-rc_id, o_id, _ = run("id && whoami", label="who am i (проверка пользователя)")
-log.info("    id/whoami вывод: %s", o_id.strip())
-rc, _, _ = sudo_once(
-    "usermod -aG sudo {u}; echo {b} | base64 -d > /etc/sudoers.d/{u} && chmod 440 /etc/sudoers.d/{u}".format(u=user, b=_b64line)
-)
-if rc != 0:
-    log.critical("[!] ШАГ 2 упал (exit %d): не удалось настроить sudo.", rc)
-    log.critical("[!] Проверь: 1) логин (-VmUser) и пароль (-VmPass) от UBUNTU, не от Windows;")
-    log.critical("[!]           2) входит ли этот юзер в группу sudo (в консоли ВМ: groups %s).", user)
-    log.critical("[!] Полный лог: %s", logfile)
-    sys.exit(1)
-log.info("    OK: NOPASSWD sudo настроен")
+if IS_ROOT:
+    log.info("==> ШАГ 2/6: vy shel kak ROOT - sudo ne nuzhen, propuskayu NOPASSWD")
+else:
+    log.info("==> ШАГ 2/6: Разрешаю NOPASSWD sudo для %s...", user)
+    sudo_line = f"{user} ALL=(ALL) NOPASSWD:ALL"
+    import base64 as _b64
+    _b64line = _b64.b64encode(sudo_line.encode()).decode()
+    # сначала проверим, что пользователь реально есть и пароль сработал
+    rc_id, o_id, _ = run("id && whoami", label="who am i (проверка пользователя)")
+    log.info("    id/whoami вывод: %s", o_id.strip())
+    rc, _, _ = sudo_once(
+        "usermod -aG sudo {u}; echo {b} | base64 -d > /etc/sudoers.d/{u} && chmod 440 /etc/sudoers.d/{u}".format(u=user, b=_b64line)
+    )
+    if rc != 0:
+        log.critical("[!] ШАГ 2 упал (exit %d): не удалось настроить sudo.", rc)
+        log.critical("[!] Проверь: 1) логин (-VmUser) и пароль (-VmPass) от UBUNTU, не от Windows;")
+        log.critical("[!]           2) входит ли этот юзер в группу sudo (в консоли ВМ: groups %s).", user)
+        log.critical("[!] Полный лог: %s", logfile)
+        sys.exit(1)
+    log.info("    OK: NOPASSWD sudo настроен")
 
 
 def su(cmd, timeout=900, label=None):
+    if IS_ROOT:
+        return run(cmd, timeout=timeout, label=label or cmd[:100])
     return run(f"sudo bash -c \"{cmd}\"", timeout=timeout, label=label or cmd[:100])
 
 
@@ -134,12 +143,14 @@ if rc != 0:
         log.error("[!] ШАГ 3: установка Docker упала (exit %d). Смотри stderr выше/в логе.", rc2)
 else:
     log.info("    docker уже установлен")
-su(f"usermod -aG docker {user}")
+if not IS_ROOT:
+    su(f"usermod -aG docker {user}")
 su("systemctl enable --now docker")
-run("sleep 2; sudo docker info --format '{{.ServerVersion}}'", label="версия docker")
+DC="docker" if IS_ROOT else "sudo docker"
+run(f"sleep 2; {DC} info --format '{{.ServerVersion}}'", label="версия docker")
 
 log.info("==> ШАГ 4/6: Копирую проект в ВМ (SFTP)...")
-remote_dir = f"/home/{user}/dz"
+remote_dir = "/root/dz" if IS_ROOT else f"/home/{user}/dz"
 run(f"rm -rf {remote_dir}; mkdir -p {remote_dir}", label="подготовка папки на ВМ")
 sftp = cli.open_sftp()
 nfiles = 0
@@ -173,12 +184,12 @@ sftp.close()
 log.info("    скопировано файлов: %d", nfiles)
 
 log.info("==> ШАГ 5/6: Сборка и запуск контейнеров (5-15 мин)...")
-rc, _, _ = run(f"cd {remote_dir} && sudo docker compose up -d --build 2>&1 | tail -25",
+rc, _, _ = run(f"cd {remote_dir} && {DC} compose up -d --build 2>&1 | tail -25",
                timeout=2400, label="docker compose up -d --build")
 if rc != 0:
     log.error("[!] ШАГ 5: compose up завершился с ошибкой exit %d.", rc)
-    run(f"cd {remote_dir} && sudo docker compose logs --tail=40 2>&1", label="логи контейнеров (для диагностики)")
-run(f"cd {remote_dir} && sudo docker compose ps", label="docker compose ps")
+    run(f"cd {remote_dir} && {DC} compose logs --tail=40 2>&1", label="логи контейнеров (для диагностики)")
+run(f"cd {remote_dir} && {DC} compose ps", label="docker compose ps")
 
 time.sleep(5)
 log.info("==> ШАГ 6/6: Проверки изнутри ВМ:")

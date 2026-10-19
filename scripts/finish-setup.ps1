@@ -181,6 +181,40 @@ $pyFile = Join-Path $PSScriptRoot "dz_finish.py"
 if (-not (Test-Path $pyFile)) { throw "Ne nayden $pyFile (ryadom s finish-setup.ps1)." }
 
 if ($Dbg) { $env:DZ_DEBUG = "1" } else { Remove-Item Env:\DZ_DEBUG -ErrorAction SilentlyContinue }
+
+# Avto-opredelenie realnogo login-vnutri-VM: esli vy v SSH napisali whoami=root,
+# a vmeste s etim parolem vkhodit imenno root - peredajom root bez dop. parametr.
+$probe = Join-Path $env:TEMP "dz_ssh_probe.py"
+@'
+import sys, paramiko
+host, port, pw = sys.argv[1], int(sys.argv[2]), sys.argv[4]
+users = [u for u in sys.argv[3].split(",") if u]
+for u in users:
+    try:
+        c = paramiko.SSHClient(); c.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        c.connect(host, port=port, username=u, password=pw, timeout=10,
+                  look_for_keys=False, allow_agent=False, banner_timeout=15, auth_timeout=15)
+        print(u); c.close(); sys.exit(0)
+    except Exception:
+        pass
+sys.exit(1)
+'@ | Set-Content -Encoding ASCII $probe
+$cands = "$VmUser,admin,root,stud"
+& $PY $probe "127.0.0.1" $SshPort $cands $VmPass 2>$null | Out-Null
+if ($LASTEXITCODE -eq 0) {
+    $found = ((& $PY $probe "127.0.0.1" $SshPort $cands $VmPass 2>$null) | Select-Object -Last 1)
+    if ($found) {
+        $found = $found.Trim()
+        if ($found -ne $VmUser) { Info "  NAJDEN rabochiy login v VM: '$found' - ispol'zuyego ego vmesto '$VmUser'" }
+        $VmUser = $found
+    }
+} else {
+    Bad "  Eto zhe oshibka 'Authentication failed': parol ne podoshel ni k odnomu loginu ($cands)."
+    Bad "  Vmestno s SSH vykhodit tol'ko banner - znachit Ubuntu pustila vas pod kakim-to drugim loginom/parolem."
+    Bad "  Posmotrite kto est': v okne VirtualBox vojdite (ili esli uzhe voshli) vypolnite: whoami; ls /home"
+    Bad "  I zapustite skript s veroznymi dannymi: .\scripts\finish-setup.ps1 -VmUser "TOCHNYJ_LOGIN" -VmPass "TOCHNYJ_PAROL""
+    throw "SSH ne pustil ni odin variant login/parol'. Sm. vyshche."
+}
 Info ("  parametry: host=127.0.0.1 port={0} user='{1}' parol='{2}' (dlina {3}) proekt={4}" -f $SshPort, $VmUser, ("*" * $VmPass.Length), $VmPass.Length, $root.FullName)
 & $PY $pyFile "127.0.0.1" $SshPort $VmUser $VmPass $root.FullName $LogFile
 $pyExit = $LASTEXITCODE
