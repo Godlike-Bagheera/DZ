@@ -55,8 +55,11 @@ print("==> Базовые пакеты...")
 sudo_once("apt-get update -y && apt-get install -y curl ca-certificates sudo")
 
 print("==> Разрешаю NOPASSWD sudo для " + user + "...")
+sudo_line = f"{user} ALL=(ALL) NOPASSWD:ALL"
+import base64 as _b64
+_b64line = _b64.b64encode(sudo_line.encode()).decode()
 rc, _, _ = sudo_once(
-    "usermod -aG sudo " + user + "; echo \"" + user + " ALL=(ALL) NOPASSWD:ALL\" > /etc/sudoers.d/" + user + "; chmod 440 /etc/sudoers.d/" + user
+    "usermod -aG sudo {u}; echo {b} | base64 -d > /etc/sudoers.d/{u} && chmod 440 /etc/sudoers.d/{u}".format(u=user, b=_b64line)
 )
 if rc != 0:
     print("[!] Не удалось настроить sudo — проверь правильность пароля (-VmPass).")
