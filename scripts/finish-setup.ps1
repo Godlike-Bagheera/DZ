@@ -11,7 +11,7 @@ param(
     [string]$VmName = "UbuntuServ",
     [string]$VmUser = "stud",
     [int]$SshPort = 2222,
-    [switch]$Debug
+    [switch]$Dbg
 )
 
 $ErrorActionPreference = "Stop"
@@ -164,7 +164,7 @@ Info "    (podrobnyj log etogo etapa: $LogFile)"
 $pyFile = Join-Path $PSScriptRoot "dz_finish.py"
 if (-not (Test-Path $pyFile)) { throw "Ne nayden $pyFile (ryadom s finish-setup.ps1)." }
 
-if ($Debug) { $env:DZ_DEBUG = "1" } else { Remove-Item Env:\DZ_DEBUG -ErrorAction SilentlyContinue }
+if ($Dbg) { $env:DZ_DEBUG = "1" } else { Remove-Item Env:\DZ_DEBUG -ErrorAction SilentlyContinue }
 & $PY $pyFile "127.0.0.1" $SshPort $VmUser $VmPass $root.FullName $LogFile
 $pyExit = $LASTEXITCODE
 if ($pyExit -eq 2) {
