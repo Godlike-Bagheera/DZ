@@ -418,7 +418,7 @@ print('FINISH_OK')
 $pyFile = Join-Path $VMDir "finish.py"
 [IO.File]::WriteAllText($pyFile, $py, (New-Object Text.UTF8Encoding($false)))
 $env:VMP = $VmPass
-& $PY $pyFile $proj
+try { & $PY $pyFile $proj } finally { Remove-Item Env:\VMP -ErrorAction SilentlyContinue }
 if ($LASTEXITCODE -ne 0) { throw "Finishnaya nastroyka ne zavershilas'. Prisley vyvod vyshe." }
 
 Step "GOTOVO! Otkroy v brauzere:"
