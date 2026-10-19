@@ -45,28 +45,40 @@ Bad "Sostoyanie VM: $status"
 
 # ---------- 2. NAT-porty ----------
 Info "==> Nastraivayu probros portov NAT (ssh $SshPort->22, frontend 8080->80, backend 8000->8000)..."
-# pravila mozhno menyat na letu cherez controlvm (dlya zapuschennoy VM)
-foreach ($rule in @(
-    "ssh,tcp,,${SshPort},,22",
-    "frontend,tcp,,8080,,80",
-    "backend,tcp,,8000,,8000")) {
-    $name = $rule.Split(',')[0]
-    & $VBM controlvm $VmName natpf1 delete $name 2>$null | Out-Null
-    & $VBM controlvm $VmName natpf1 "$rule" 2>$null | Out-Null
-    if ($LASTEXITCODE -ne 0) {
-        # esli VM vyklyuchena  cherez modifyvm
-        & $VBM modifyvm $VmName --natpf1 delete $name 2>$null | Out-Null
-        & $VBM modifyvm $VmName --natpf1 "$rule" 2>$null | Out-Null
+$rules = @(
+    @{n="ssh";      r="tcp,,${SshPort},,22"},
+    @{n="frontend"; r="tcp,,8080,,80"},
+    @{n="backend";  r="tcp,,8000,,8000"}
+)
+if ($status -eq "running") {
+    # na letu: tolko controlvm, bez delete (esli pravila net - E_INVALIDARG normalno)
+    foreach ($q in $rules) {
+        & $VBM controlvm $VmName natpf1 "$($q.n),$($q.r)" 2>$null | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            & $VBM controlvm $VmName natpf1 delete $($q.n) 2>$null | Out-Null
+            & $VBM controlvm $VmName natpf1 "$($q.n),$($q.r)" 2>$null | Out-Null
+        }
     }
-}
-Ok "Porty nastroeny."
-
-# ---------- 3. zapusk VM esli vyklyuchena ----------
-if ($status -ne "running") {
+} else {
+    # vyklyuchena: modifyvm + proverka, chto imenno natpf1 (a ne hostonly/bridged)
+    & $VBM modifyvm $VmName --natpf1 delete ssh 2>$null | Out-Null
+    & $VBM modifyvm $VmName --natpf1 delete frontend 2>$null | Out-Null
+    & $VBM modifyvm $VmName --natpf1 delete backend 2>$null | Out-Null
+    foreach ($q in $rules) {
+        & $VBM modifyvm $VmName --natpf1 "$($q.n),$($q.r)" 2>$null | Out-Null
+    }
+    $netInfo = & $VBM showvminfo $VmName --machinereadable | Select-String 'nic1='
+    if ($netInfo -match 'hostonly|bridged|notattached') {
+        Bad "Adapter1 v VM tip $(($netInfo -join '').Trim()) - NAT neobkhodim. Ustanovite: Network Adapter 1 -> Attached to: NAT, i povtorite skript."
+        exit 1
+    }
     Info "==> Zapuskayu VM (headless)..."
     Start-Process -FilePath $VBM -ArgumentList @("startvm", $VmName, "--type", "headless") -WindowStyle Hidden
     Start-Sleep -Seconds 15
 }
+Ok "Porty nastroeny."
+
+# ---------- 3. (VM uzhe zapushchenya vyse) ----------
 
 # ---------- 4. zhdyom SSH-banner ----------
 Info "==> Zhdu SSH-banner na 127.0.0.1:${SshPort} (do 3 min)..."
