@@ -3,19 +3,30 @@
 # Trebovaniya: VirtualBox (VBoxManage), Python s paramiko (pip install --user paramiko).
 # Zapusk:  .\scripts\finish-setup.ps1 -VmPass "parol_ot_ubuntu"
 # Esli Ubuntu stavilas vruchnuyu i login ne stud - ukazhite -VmUser "imya".
+# Logirovanie: vsegda pishetsya polny log v $env:USERPROFILE\dz-finish.log
+#              + transcript vsego ekrana v $env:USERPROFILE\dz-finish-transcript.txt
 
 param(
     [Parameter(Mandatory=$true)][string]$VmPass,
     [string]$VmName = "UbuntuServ",
     [string]$VmUser = "stud",
-    [int]$SshPort = 2222
+    [int]$SshPort = 2222,
+    [switch]$Debug
 )
 
 $ErrorActionPreference = "Stop"
 
-function Info($m) { Write-Host $m -ForegroundColor Cyan }
-function Ok($m)   { Write-Host "    $m" -ForegroundColor Green }
-function Bad($m)  { Write-Host "    $m" -ForegroundColor Yellow }
+# ---------- logging ----------
+$LogFile = Join-Path $env:USERPROFILE "dz-finish.log"
+$TranscriptFile = Join-Path $env:USERPROFILE "dz-finish-transcript.txt"
+try { Start-Transcript -Path $TranscriptFile -Append | Out-Null } catch {}
+Write-Host "Log skriptov:  $TranscriptFile" -ForegroundColor DarkGray
+Write-Host "Log VM-nastrojki: $LogFile" -ForegroundColor DarkGray
+
+function TS { Get-Date -Format "HH:mm:ss" }
+function Info($m) { Write-Host ("[{0}] {1}" -f (TS), $m) -ForegroundColor Cyan }
+function Ok($m)   { Write-Host ("[{0}]     {1}" -f (TS), $m) -ForegroundColor Green }
+function Bad($m)  { Write-Host ("[{0}]     {1}" -f (TS), $m) -ForegroundColor Yellow }
 
 # ---------- 0. VirtualBox ----------
 Info "==> Ischu VirtualBox..."
@@ -34,13 +45,16 @@ Ok "OK: $VBM"
 # ---------- 1. VM suschestvuet? ----------
 Info "==> Proveryayu nalichie VM '$VmName'..."
 $vmlist = & $VBM list vms | Out-String
-if ($vmlist -notmatch [regex]::Escape("`"$VmName`"")) {
+Info "    Spisok VM: $($vmlist.Trim())"
+if ($vmlist -notmatch [regex]::Escape("`"$VmName`"" )) {
     throw "VM '$VmName' ne naydena. Spisok vashih VM:`n$vmlist`nUkazhite pravilnoe imya cherez -VmName (imya iz spiska above)."
 }
 Ok "VM naydena."
 
 # status
-$status = (& $VBM showvminfo $VmName --machinereadable | Select-String '^VMState="(.+)"').Matches[0].Groups[1].Value
+$stateLine = (& $VBM showvminfo $VmName --machinereadable | Select-String '^VMState="(.+)"')
+if (-not $stateLine) { throw "Ne udalos uznat sostoyanie VM '$VmName' (VBoxManage showvminfo). Vypolnite vruchnuyu: & `"$VBM`" showvminfo `"$VmName`" --machinereadable i prishlite vyvod." }
+$status = $stateLine.Matches[0].Groups[1].Value
 Bad "Sostoyanie VM: $status"
 
 # ---------- 2. NAT-porty ----------
@@ -84,7 +98,9 @@ Ok "Porty nastroeny."
 Info "==> Zhdu SSH-banner na 127.0.0.1:${SshPort} (do 3 min)..."
 $deadline = (Get-Date).AddMinutes(3)
 $banner = $false
+$attemptN = 0
 while ((Get-Date) -lt $deadline) {
+    $attemptN++
     try {
         $tcp = New-Object System.Net.Sockets.TcpClient("127.0.0.1", $SshPort)
         $stream = $tcp.GetStream()
@@ -93,16 +109,26 @@ while ((Get-Date) -lt $deadline) {
         $n = $stream.Read($buf, 0, 64)
         $txt = [System.Text.Encoding]::ASCII.GetString($buf, 0, $n)
         $tcp.Close()
+        Info "    proverka #${attemptN}: poluchen banner: '$($txt.Trim())'"
         if ($txt -match "^SSH-") { $banner = $true; break }
-    } catch {}
+    } catch {
+        Info "    proverka #${attemptN}: $($_.Exception.GetType().Name): $($_.Exception.Message)"
+    }
     Start-Sleep -Seconds 5
-    Write-Host "    ...zhdu..."
 }
 if (-not $banner) {
-    throw "SSH-banner ne poluchen. Varianty: 1) V Ubuntu net OpenSSH server - zaydite v okno VM i vypolnite: sudo apt update ; sudo apt install -y openssh-server ; sudo systemctl enable --now ssh. 2) Neverny login/port - proverte -VmUser/-SshPort. 3) Set' adaptera dolzhen byt NAT."
+    throw @"
+SSH-banner ne poluchen za 3 min. Diagnoz i varianty:
+  1) V Ubuntu net OpenSSH server. Zaydite v okno VirtualBox (login/password kak pri ustanovke) i vypolnite:
+       sudo apt update ; sudo apt install -y openssh-server ; sudo systemctl enable --now ssh
+     Potom povtorite zapusk etogo skripta.
+  2) Nevernyj login ili port - proverte parametry -VmUser/-SshPort.
+  3) Set' adaptera VM dolzhen byt NAT (Network Adapter 1 -> Attached to: NAT).
+  4) Proveryaye, cto VM voobshche zagruzilas': v okne VirtualBox dolzhna byt stroka login:.
+"@
 
 }
-Ok "SSH zhivoy!"
+Ok "SSH zhivoy! (posle #${attemptN} proverok)"
 
 # ---------- 5. paramiko ----------
 Info "==> Proveryayu Python + paramiko..."
@@ -134,11 +160,22 @@ Ok "Proekt skachan: $($root.FullName)"
 
 # ---------- 7. vsyo po SSH cherez python-skript ----------
 Info "==> Stavlyu Docker vnutri Ubuntu, zalivayu proekt, zapuskayu konteynery..."
+Info "    (podrobnyj log etogo etapa: $LogFile)"
 $pyFile = Join-Path $PSScriptRoot "dz_finish.py"
 if (-not (Test-Path $pyFile)) { throw "Ne nayden $pyFile (ryadom s finish-setup.ps1)." }
 
-& $PY $pyFile "127.0.0.1" $SshPort $VmUser $VmPass $root.FullName
-if ($LASTEXITCODE -ne 0) { throw "Udalyonnaya nastroyka zavershilas s oshibkoy (sm. vyvod vyshe)." }
+if ($Debug) { $env:DZ_DEBUG = "1" } else { Remove-Item Env:\DZ_DEBUG -ErrorAction SilentlyContinue }
+& $PY $pyFile "127.0.0.1" $SshPort $VmUser $VmPass $root.FullName $LogFile
+$pyExit = $LASTEXITCODE
+if ($pyExit -eq 2) {
+    Bad "SSH-aontifikatsiya ne udalas'. Smoyka: login='$VmUser' parol'-iz-parametra -VmPass."
+    Bad "Eto PAROL OT UBUNTU (zadayotsya pri ustanovke OS), NE ot Windows."
+    Bad "Esli somnevaeshsya - vojdite vruchnuyu: ssh $VmUser@127.0.0.1 -p $SshPort"
+    Bad "ili smenity parol v konsoli VM: sudo passwd $VmUser"
+    throw "Python-skript vernul kod 2 (SSH auth failed). Polnyj log: $LogFile i $TranscriptFile"
+} elseif ($pyExit -ne 0) {
+    throw "Udalyonnaya nastroyka zavershilas s oshibkoy (kod $pyExit). Sm. vyvod vyshe i logi: $LogFile, $TranscriptFile"
+}
 
 # ---------- 8. finalnaya proverka s Windows ----------
 Info "==> Proverka s tvoey Windows:"
