@@ -25,8 +25,8 @@ $DL "https://download.docker.com/linux/static/stable/x86_64/docker-$DVER.tgz" > 
 echo "==> 3. Распаковываю в ~/.local/bin ..."
 tar xzf dkr.tgz && tar xzf rce.tgz
 cp docker/docker* ~/.local/bin/ 2>/dev/null || true
-cp docker-rootless-extras/dockerd-rootless.sh docker-rootless-extras/dockerd-rootless-setuptool.sh ~/.local/bin/ 2>/dev/null || true
-chmod +x ~/.local/bin/docker* 
+cp docker-rootless-extras/* ~/.local/bin/ 2>/dev/null || true   # тут же rootlesskit и newuidmap/newgidmap-обёртки
+chmod +x ~/.local/bin/* 
 
 # докер-команды compose: плагин-бинарник
 $DL "https://github.com/docker/compose/releases/latest/download/docker-compose-linux-x86_64" -o ~/.docker/cli-plugins/docker-compose 2>/dev/null || {
@@ -47,18 +47,40 @@ cat /etc/subuid 2>/dev/null | grep -q "^$(whoami):" && echo "    subuid есть
 
 systemctl --user status >/dev/null 2>&1 || { echo "    systemd --user недоступен (нет сессии?) — запусти из обычного терминала входа, не из su"; exit 1; }
 
+# iptables может отсутствовать/не грузиться без sudo — тогда демон стартует с --iptables=false
+export PATH=~/.local/bin:$PATH
+if command -v rootlesskit >/dev/null 2>&1 || [ -x ~/.local/bin/rootlesskit ]; then
+  echo "    rootlesskit найден, ОК"
+else
+  echo "    ВНИМАНИЕ: rootlesskit не найден даже после распаковки — см. доп. инструкции ниже"; 
+fi
+
 ~/.local/bin/dockerd-rootless-setuptool.sh install || {
-  echo "    Пробую с обходом проверки subuid (допустимо для учебных задач)...";
-  export XDG_DATA_HOME=$HOME/.docker-data/share XDG_CONFIG_HOME=$HOME/.config XDG_RUNTIME_DIR=/run/user/$(id -u) DOCKERD_ROOTLESS_ROOTLESSKIT_FLAGS="--disable-host-loopback --mtu=65520"
-  ~/.local/bin/dockerd-rootless-setuptool.sh install --force || true
+  echo "    Пробую установить с обходом проверок (без iptables, допустимо для учебных задач)...";
+  mkdir -p ~/.config/systemd/user
+  cat > ~/.config/systemd/user/docker.service <<EOF
+[Unit]
+Description=Docker Application Container Engine (Rootless)
+Documentation=https://docs.docker.com/go/rootless/
+
+[Service]
+Environment=PATH=\$HOME/.local/bin:/usr/bin:/bin
+Environment=XDG_RUNTIME_DIR=/run/user/$(id -u)
+ExecStart=\$HOME/.local/bin/dockerd-rootless.sh --iptables=false --ip6tables=false --bridge=none
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
+EOF
+  systemctl daemon-reload --user 2>/dev/null || true
 }
 
 echo "==> 6. Запускаю демона..."
 systemctl --user enable --now docker 2>/dev/null || {
-  nohup ~/.local/bin/dockerd-rootless.sh > ~/dockerd.log 2>&1 &
+  nohup ~/.local/bin/dockerd-rootless.sh --iptables=false --ip6tables=false --bridge=none > ~/dockerd.log 2>&1 &
 }
 export DOCKER_HOST=unix://$XDG_RUNTIME_DIR/docker.sock
-echo "export DOCKER_HOST=unix://\$XDG_RUNTIME_DIR/docker.sock" >> ~/.bashrc
+grep -q 'DOCKER_HOST' ~/.bashrc || echo "export DOCKER_HOST=unix://\$XDG_RUNTIME_DIR/docker.sock" >> ~/.bashrc
 
 sleep 5
 echo "==> 7. Проверка:"
