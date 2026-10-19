@@ -35,7 +35,8 @@ $vdi = Join-Path $VMDir "$VmName.vdi"
 Step "Готовлю файл автоустановки Ubuntu (cloud-init/subiquity)..."
 # Хеш пароля считаем на самой ВМ во время установки (python3 есть в окружении установщика),
 # поэтому с Windows генерация crypt-хеша не нужна.
-$VmPassEsc = $VmPass -replace "'", "''"
+$VmPassB64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($VmPass))
+$pyGen = 'import crypt,base64,sys;print(crypt.crypt(base64.b64decode(sys.argv[1]).decode(),crypt.METHOD_SHA512))'
 $userData = @"
 #cloud-config
 autoinstall:
@@ -59,7 +60,11 @@ autoinstall:
   late-commands:
     - echo 'stud ALL=(ALL) NOPASSWD:ALL' > /target/etc/sudoers.d/stud
     - chmod 440 /target/etc/sudoers.d/stud
-    - curtin in-target -- bash -c "printf '%s\n' 'import crypt; print(crypt.crypt(''''$VmPassEsc'''', crypt.METHOD_SHA512))' > /tmp/ph.py && python3 /tmp/ph.py > /tmp/ph && usermod -p \"\$(cat /tmp/ph)\" stud && rm -f /tmp/ph /tmp/ph.py"
+    - curtin in-target -- sh -c 'echo $VmPassB64 | base64 -d > /tmp/pw'
+    - curtin in-target -- sh -c 'echo $([Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($pyGen))) | base64 -d > /tmp/ph.py'
+    - curtin in-target -- sh -c 'python3 /tmp/ph.py "$(cat /tmp/pw)" > /tmp/ph 2>/dev/null || python3 /tmp/ph.py $(cat /tmp/pw) > /tmp/ph'
+    - curtin in-target -- usermod -p "$(cat /tmp/ph)" stud
+    - curtin in-target -- rm -f /tmp/pw /tmp/ph /tmp/ph.py
 "@
 $cid = Join-Path $VMDir "user-data"
 Set-Content -Path $cid -Value $userData -Encoding ASCII -NoNewline
@@ -197,7 +202,7 @@ run('cd ~/dz && sudo docker compose up -d --build')
 time.sleep(8)
 run('sudo docker compose -f ~/dz/docker-compose.yml ps')
 print('=== проверка ===')
-run('curl -s -m 10 http://localhost/api/hello/ || curl -s -m 10 http://localhost:8000/api/hello/')
+run('curl -s -m 10 http://localhost:8000/api/hello/; echo; curl -s -m 10 http://localhost/api/hello/; echo')
 run('curl -sI -m 10 http://localhost/ | head -3')
 cli.close()
 "@
